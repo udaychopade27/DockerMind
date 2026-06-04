@@ -1,0 +1,116 @@
+networks:
+  dockermind:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  ollama_models:
+  master_data:     # SQLite DB + persistent state
+
+services:
+
+  # ── Ollama ──────────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: dockermind-ollama
+    restart: unless-stopped
+    networks: [dockermind]
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_MAX_QUEUE=4
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Model pull (runs once) ───────────────────────────────────────────────────
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: dockermind-model-pull
+    restart: "no"
+    networks: [dockermind]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        echo 'Pulling qwen2.5-coder:1.5b...' &&
+        ollama pull qwen2.5-coder:1.5b &&
+        echo 'done' > /tmp/pull_done &&
+        echo 'Model ready!' &&
+        sleep infinity
+      "
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+
+  # ── Master API ───────────────────────────────────────────────────────────────
+  master:
+    build:
+      context: ./master
+      dockerfile: Dockerfile
+    container_name: dockermind-master
+    restart: unless-stopped
+    networks: [dockermind]
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./master/certs:/app/certs:ro
+      - master_data:/app/data
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - LLM_MODEL=qwen2.5-coder:1.5b
+      - LLM_TIMEOUT=180
+      - LLM_NUM_CTX=2048
+      - LLM_NUM_PREDICT=256
+      - MASTER_HOST=0.0.0.0
+      - MASTER_PORT=8000
+      - API_SECRET=${API_SECRET:-dockermind-dev-secret}
+      - SLAVE_TIMEOUT_SECS=30
+      - DB_PATH=/app/data/dockermind.db
+      # Optional — set in .env to enable notifications
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - NOTIFY_MIN_SEVERITY=${NOTIFY_MIN_SEVERITY:-error}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Slave agent (local dev) ──────────────────────────────────────────────────
+  slave-local:
+    build:
+      context: ./slave
+      dockerfile: Dockerfile
+    container_name: dockermind-slave-local
+    restart: unless-stopped
+    networks: [dockermind]
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./master/certs:/app/certs:ro
+    environment:
+      - SLAVE_ID=slave-local
+      - MASTER_URL=http://master:8000
+      - SLAVE_PORT=8080
+      - DOCKER_SOCKET=/var/run/docker.sock
+    depends_on:
+      master:
+        condition: service_healthy

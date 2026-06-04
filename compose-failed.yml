@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  failing-service:
+    image: alpine:latest
+    container_name: failing-service
+
+    command: >
+      sh -c '
+      COUNT=0
+      while true; do
+        echo "[ERROR] Database connection failed"
+
+        COUNT=$((COUNT+1))
+
+        if [ $COUNT -gt 8 ]; then
+          echo "[FATAL] Service crashed"
+          exit 1
+        fi
+
+        sleep 5
+      done
+      '
+
+    restart: "no"

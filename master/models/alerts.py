@@ -1,15 +1,43 @@
 import uuid
 import time
+import asyncio
 from collections import deque
 from typing import List, Optional
 from models.events import Alert
 
 
 class AlertStore:
-    """Thread-safe in-memory alert store — keeps last 500 alerts."""
+    """Thread-safe alert store backed by SQLite for persistence across restarts."""
 
     def __init__(self, maxlen: int = 500):
         self._alerts: deque[Alert] = deque(maxlen=maxlen)
+
+    async def load_from_db(self):
+        """Pre-populate alerts from SQLite on master startup."""
+        try:
+            from database import db_load_recent_alerts
+            rows = await db_load_recent_alerts(limit=500)
+            self._alerts.clear()
+            for r in rows:
+                try:
+                    alert = Alert(
+                        alert_id=r["alert_id"],
+                        slave_id=r["slave_id"],
+                        container_name=r["container_name"],
+                        severity=r["severity"],
+                        root_cause=r["root_cause"],
+                        fix=r["fix"],
+                        auto_heal=r["auto_heal"],
+                        heal_action=r["heal_action"],
+                        healed=r["healed"],
+                        ts=r.get("created_at", time.time()),
+                    )
+                    self._alerts.append(alert)
+                except Exception:
+                    pass
+            print(f"[AlertStore] Loaded {len(self._alerts)} persistent alerts from SQLite database")
+        except Exception as e:
+            print(f"[AlertStore] Error loading alerts from DB: {e}")
 
     def add(self,
             slave_id: str,
@@ -30,12 +58,27 @@ class AlertStore:
             heal_action=heal_action,
         )
         self._alerts.appendleft(alert)
+        
+        # Persist asynchronously to SQLite
+        try:
+            loop = asyncio.get_running_loop()
+            from database import db_save_alert
+            loop.create_task(db_save_alert(alert.to_dict()))
+        except RuntimeError:
+            pass
+
         return alert
 
     def mark_healed(self, alert_id: str) -> bool:
         for alert in self._alerts:
             if alert.alert_id == alert_id:
                 alert.healed = True
+                try:
+                    loop = asyncio.get_running_loop()
+                    from database import db_mark_alert_healed
+                    loop.create_task(db_mark_alert_healed(alert_id, time.time()))
+                except RuntimeError:
+                    pass
                 return True
         return False
 

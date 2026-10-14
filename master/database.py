@@ -83,6 +83,25 @@ async def init_db():
         CREATE INDEX IF NOT EXISTS idx_jobs_slave ON jobs(slave_id);
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
         CREATE INDEX IF NOT EXISTS idx_audit_container ON audit_log(container);
+
+        CREATE TABLE IF NOT EXISTS alerts (
+            alert_id TEXT PRIMARY KEY,
+            slave_id TEXT NOT NULL,
+            container_name TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            root_cause TEXT NOT NULL,
+            fix TEXT,
+            auto_heal INTEGER DEFAULT 0,
+            heal_action TEXT DEFAULT 'none',
+            healed INTEGER DEFAULT 0,
+            created_at REAL NOT NULL,
+            healed_at REAL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_alerts_healed ON alerts(healed);
+        CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+        CREATE INDEX IF NOT EXISTS idx_alerts_container ON alerts(container_name);
+        CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
         """)
         await db.commit()
 
@@ -125,3 +144,80 @@ async def audit(
             ),
         )
         await db.commit()
+
+
+async def db_save_alert(alert: dict):
+    """Persist an alert to SQLite."""
+    try:
+        async with get_db() as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO alerts(
+                    alert_id, slave_id, container_name, severity, root_cause,
+                    fix, auto_heal, heal_action, healed, created_at, healed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    alert.get("alert_id"),
+                    alert.get("slave_id", "local"),
+                    alert.get("container_name", ""),
+                    alert.get("severity", "warn"),
+                    alert.get("root_cause", ""),
+                    alert.get("fix", ""),
+                    1 if alert.get("auto_heal") else 0,
+                    alert.get("heal_action", "none"),
+                    1 if alert.get("healed") else 0,
+                    alert.get("created_at", time.time()),
+                    alert.get("healed_at"),
+                )
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[DB] Error saving alert {alert.get('alert_id')}: {e}")
+
+
+async def db_mark_alert_healed(alert_id: str, healed_at: float = None):
+    """Mark an alert as healed in SQLite."""
+    try:
+        async with get_db() as db:
+            await db.execute(
+                """
+                UPDATE alerts SET healed=1, healed_at=? WHERE alert_id=?
+                """,
+                (healed_at or time.time(), alert_id)
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[DB] Error updating alert {alert_id}: {e}")
+
+
+async def db_load_recent_alerts(limit: int = 500) -> list:
+    """Load recent alerts from SQLite on startup."""
+    try:
+        async with get_db() as db:
+            async with db.execute(
+                """
+                SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?
+                """,
+                (limit,)
+            ) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for r in rows:
+                    results.append({
+                        "alert_id": r["alert_id"],
+                        "slave_id": r["slave_id"],
+                        "container_name": r["container_name"],
+                        "severity": r["severity"],
+                        "root_cause": r["root_cause"],
+                        "fix": r["fix"],
+                        "auto_heal": bool(r["auto_heal"]),
+                        "heal_action": r["heal_action"],
+                        "healed": bool(r["healed"]),
+                        "created_at": r["created_at"],
+                        "healed_at": r["healed_at"],
+                    })
+                return results
+    except Exception as e:
+        print(f"[DB] Error loading alerts: {e}")
+        return []

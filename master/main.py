@@ -1,3 +1,4 @@
+from services.host_metrics import get_master_host_stats
 import asyncio
 import time
 from contextlib import asynccontextmanager
@@ -67,6 +68,7 @@ async def slave_monitor():
         await ws_manager.broadcast({
             "event": "slave_status",
             "data":  registry.all(),
+            "master_host_stats": get_master_host_stats(),
             "ts":    time.time(),
         })
 
@@ -77,6 +79,7 @@ async def slave_monitor():
 async def lifespan(app: FastAPI):
     print("=== DockerMind Master v0.3.0 starting ===")
     await init_db()
+    await alert_store.load_from_db()
     await runbook_engine.seed_builtins()
     llm_ok = await llm_client.check_ollama_health()
     print(f"[LLM] provider={llm_client.LLM_PROVIDER}  reachable={llm_ok}  model=gemini:{llm_client.GEMINI_MODEL} | openrouter:{llm_client.OPENROUTER_MODEL} | ollama:{llm_client.LLM_MODEL}")
@@ -158,6 +161,7 @@ class ExecRequest(BaseModel):
 class StatsRequest(BaseModel):
     slave_id: str
     stats: list
+    host_stats: Optional[dict] = None
     ts: float = 0
 
 
@@ -174,14 +178,15 @@ async def health():
         "online":      f"{llm_client.GEMINI_MODEL} → {llm_client.OPENROUTER_MODEL}",
     }.get(provider, provider)
     return {
-        "status":    "ok",
-        "version":   "0.3.0",
-        "llm":       "ready" if llm_ok else "unavailable",
-        "llm_provider": provider,
-        "llm_model": active_model,
-        "slaves":    registry.count(),
-        "pipeline":  log_pipeline.stats(),
-        "ts":        time.time(),
+        "status":            "ok",
+        "version":           "0.3.0",
+        "llm":               "ready" if llm_ok else "unavailable",
+        "llm_provider":      provider,
+        "llm_model":         active_model,
+        "slaves":            registry.count(),
+        "master_host_stats": get_master_host_stats(),
+        "pipeline":          log_pipeline.stats(),
+        "ts":                time.time(),
     }
 
 
@@ -264,11 +269,14 @@ async def auto_heal(req: HealRequest, user: dict = Depends(require_role("operato
 # Called by slave health_reporter — public (no auth, internal traffic only)
 @app.post("/slaves/stats", tags=["slaves"], include_in_schema=False)
 async def receive_stats(req: StatsRequest):
+    if req.host_stats:
+        registry.update_host_stats(req.slave_id, req.host_stats)
     await ws_manager.broadcast({
-        "event":    "stats_update",
-        "slave_id": req.slave_id,
-        "stats":    req.stats,
-        "ts":       req.ts,
+        "event":      "stats_update",
+        "slave_id":   req.slave_id,
+        "stats":      req.stats,
+        "host_stats": req.host_stats,
+        "ts":         req.ts,
     })
     return {"status": "ok"}
 
@@ -281,10 +289,11 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         containers = await asyncio.to_thread(docker_ops.list_containers, all_containers=True, include_stats=False)
         await ws.send_json({
-            "event":      "init",
-            "slaves":     registry.all(),
-            "containers": containers,
-            "ts":         time.time(),
+            "event":             "init",
+            "slaves":            registry.all(),
+            "containers":        containers,
+            "master_host_stats": get_master_host_stats(),
+            "ts":                time.time(),
         })
         while True:
             data = await ws.receive_text()

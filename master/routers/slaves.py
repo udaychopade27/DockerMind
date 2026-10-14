@@ -179,7 +179,12 @@ async def receive_event(req: EventRequest):
 
 @router.get("", summary="List all slave nodes (viewer+)")
 async def list_slaves(user: dict = Depends(get_current_user)):
-    return {"slaves": registry.all(), "counts": registry.count()}
+    from services.host_metrics import get_master_host_stats
+    return {
+        "slaves": registry.all(),
+        "counts": registry.count(),
+        "master_host_stats": get_master_host_stats(),
+    }
 
 
 @router.delete("/{slave_id}", summary="Remove a slave (admin only)")

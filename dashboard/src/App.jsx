@@ -194,6 +194,69 @@ function LoginScreen({ onLoginSuccess }) {
   );
 }
 
+
+// Host Telemetry Gauges Renderer (CPU, Memory, Disk)
+const renderHostGauges = (stats, isOnline = true) => {
+  if (!isOnline) {
+    return (
+      <div className="mt-3 pt-3 text-xs text-rose font-mono flex items-center gap-1.5" style={{ borderTop: '1px solid rgba(51,65,85,0.4)' }}>
+        <XCircle size={13} /> Node unreachable — telemetry stream disconnected
+      </div>
+    );
+  }
+
+  if (!stats || !stats.mem_total_gb) {
+    return (
+      <div className="mt-3 pt-3 text-xs text-muted font-mono flex items-center gap-1.5" style={{ borderTop: '1px solid rgba(51,65,85,0.4)' }}>
+        <Sparkles size={12} className="animate-spin text-cyan" /> Polling host metrics (RAM, Disk, CPU)...
+      </div>
+    );
+  }
+
+  const cpuPct = stats.cpu_pct || 0;
+  const memPct = stats.mem_pct || 0;
+  const diskPct = stats.disk_pct || 0;
+
+  const getFill = (pct) => pct > 85 ? 'fill-rose' : pct > 70 ? 'fill-amber' : 'fill-emerald';
+
+  return (
+    <div className="mt-3 pt-2.5" style={{ borderTop: '1px solid rgba(51,65,85,0.4)' }}>
+      {/* CPU */}
+      <div className="mb-2">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} className="text-xs font-mono">
+          <span className="text-muted flex items-center gap-1"><Cpu size={12} className="text-cyan" /> CPU Load</span>
+          <span className="font-semibold text-slate-200">{cpuPct.toFixed(1)}%</span>
+        </div>
+        <div className="progress-bar-bg" style={{ height: '5px', marginTop: '0.25rem' }}>
+          <div className={`progress-bar-fill ${cpuPct > 85 ? 'fill-rose' : cpuPct > 70 ? 'fill-amber' : 'fill-cyan'}`} style={{ width: `${Math.min(100, Math.max(3, cpuPct))}%` }} />
+        </div>
+      </div>
+
+      {/* Memory (RAM) */}
+      <div className="mb-2">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} className="text-xs font-mono">
+          <span className="text-muted flex items-center gap-1"><Activity size={12} className="text-violet" /> Host RAM</span>
+          <span className="font-semibold text-slate-200">{stats.mem_used_gb} GB / {stats.mem_total_gb} GB ({memPct.toFixed(1)}%)</span>
+        </div>
+        <div className="progress-bar-bg" style={{ height: '5px', marginTop: '0.25rem' }}>
+          <div className={`progress-bar-fill ${getFill(memPct)}`} style={{ width: `${Math.min(100, Math.max(3, memPct))}%` }} />
+        </div>
+      </div>
+
+      {/* Storage (Disk) */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} className="text-xs font-mono">
+          <span className="text-muted flex items-center gap-1"><Layers size={12} className="text-amber" /> Disk Storage</span>
+          <span className="font-semibold text-slate-200">{stats.disk_used_gb} GB / {stats.disk_total_gb} GB ({diskPct.toFixed(1)}%)</span>
+        </div>
+        <div className="progress-bar-bg" style={{ height: '5px', marginTop: '0.25rem' }}>
+          <div className={`progress-bar-fill ${getFill(diskPct)}`} style={{ width: `${Math.min(100, Math.max(3, diskPct))}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('fleet'); // fleet | logs | incidents | dispatch | audit | chat
   const [token, setToken] = useState(localStorage.getItem('dockermind_token') || '');
@@ -213,6 +276,7 @@ export default function App() {
   const [crashLoops, setCrashLoops] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [jobs, setJobs] = useState([]);
+  const [masterHostStats, setMasterHostStats] = useState(null);
 
   // Log & AI Diagnosis State
   const [selectedContainer, setSelectedContainer] = useState('dockermind-master');
@@ -289,28 +353,30 @@ export default function App() {
     }
   };
 
-  // Initialize Data
+  // Initialize Data concurrently with Promise.all
   const refreshAll = async () => {
-    const slavesData = await apiFetch('/slaves');
-    if (slavesData?.slaves) setSlaves(slavesData.slaves);
+    try {
+      const [slavesData, containersData, alertsData, crashData, auditData, jobsData, meData] = await Promise.all([
+        apiFetch('/slaves'),
+        apiFetch('/containers'),
+        apiFetch('/alerts'),
+        apiFetch('/slaves/crash-loops'),
+        apiFetch('/jobs/audit/log?limit=25'),
+        apiFetch('/jobs'),
+        apiFetch('/auth/me'),
+      ]);
 
-    const containersData = await apiFetch('/containers');
-    if (containersData?.containers) setContainers(containersData.containers);
-
-    const alertsData = await apiFetch('/alerts');
-    if (alertsData?.alerts) setAlerts(alertsData.alerts);
-
-    const crashData = await apiFetch('/slaves/crash-loops');
-    if (crashData?.crash_loops) setCrashLoops(crashData.crash_loops);
-
-    const auditData = await apiFetch('/jobs/audit/log?limit=25');
-    if (auditData?.audit_log) setAuditLogs(auditData.audit_log);
-
-    const jobsData = await apiFetch('/jobs');
-    if (jobsData?.jobs) setJobs(jobsData.jobs);
-
-    const meData = await apiFetch('/auth/me');
-    if (meData?.username) setCurrentUser(meData);
+      if (slavesData?.slaves) setSlaves(slavesData.slaves);
+      if (slavesData?.master_host_stats) setMasterHostStats(slavesData.master_host_stats);
+      if (containersData?.containers) setContainers(containersData.containers);
+      if (alertsData?.alerts) setAlerts(alertsData.alerts);
+      if (crashData?.crash_loops) setCrashLoops(crashData.crash_loops);
+      if (auditData?.audit_log) setAuditLogs(auditData.audit_log);
+      if (jobsData?.jobs) setJobs(jobsData.jobs);
+      if (meData?.username) setCurrentUser(meData);
+    } catch (e) {
+      console.error('refreshAll error:', e);
+    }
   };
 
   useEffect(() => {
@@ -554,14 +620,8 @@ export default function App() {
             if (data.event === 'init') {
               if (data.slaves) setSlaves(data.slaves);
               if (data.containers) setContainers(data.containers);
-            } else if (data.event === 'stats_update' && data.stats) {
-              setStatsMap(prev => {
-                const updated = { ...prev };
-                data.stats.forEach(s => {
-                  updated[s.name] = s;
-                });
-                return updated;
-              });
+              if (data.master_host_stats) setMasterHostStats(data.master_host_stats);
+
             } else if (data.event === 'alert') {
               setAlerts(prev => [data.alert, ...prev]);
               addToast(data.alert.severity === 'critical' ? 'crit' : 'warn', 'Incident Alert', `${data.container}: ${data.alert.root_cause}`);
@@ -573,6 +633,18 @@ export default function App() {
               refreshAll();
             } else if (data.event === 'slave_status') {
               if (data.data) setSlaves(data.data);
+              if (data.master_host_stats) setMasterHostStats(data.master_host_stats);
+            } else if (data.event === 'stats_update') {
+              if (data.stats) {
+                setStatsMap(prev => {
+                  const updated = { ...prev };
+                  data.stats.forEach(s => { updated[s.name] = s; });
+                  return updated;
+                });
+              }
+              if (data.host_stats && data.slave_id) {
+                setSlaves(prev => prev.map(s => s.slave_id === data.slave_id ? { ...s, host_stats: data.host_stats } : s));
+              }
             }
           } catch (e) {
             console.error('WS Parse error:', e);
@@ -752,16 +824,21 @@ export default function App() {
                   <Server size={18} className="text-cyan" /> Registered Host Nodes
                 </h3>
                 <div className="grid grid-cols-2 gap-4">
+                  {/* Master Node Card */}
                   <div className="card-glass" style={{ borderLeft: '4px solid var(--emerald-400)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div>
-                        <div className="font-semibold text-base">master (local)</div>
+                        <div className="font-semibold text-base flex items-center gap-2">
+                          <Server size={16} className="text-emerald" /> master (local)
+                        </div>
                         <div className="text-xs text-dim font-mono">127.0.0.1:8000 • Master Controller</div>
                       </div>
                       <span className="badge badge-ok">HEALTHY</span>
                     </div>
+                    {renderHostGauges(masterHostStats, true)}
                   </div>
 
+                  {/* Registered Slave Node Cards */}
                   {slaves.map((slave) => {
                     const isOnline = slave.is_online || slave.status === 'online';
                     const tagList = Array.isArray(slave.tags) ? slave.tags.join(', ') : (slave.tags || 'worker');
@@ -769,13 +846,16 @@ export default function App() {
                       <div key={slave.slave_id} className="card-glass" style={{ borderLeft: `4px solid ${isOnline ? 'var(--cyan-400)' : 'var(--rose-400)'}` }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <div>
-                            <div className="font-semibold text-base">{slave.slave_id}</div>
+                            <div className="font-semibold text-base flex items-center gap-2">
+                              <Radio size={16} className={isOnline ? 'text-cyan' : 'text-rose'} /> {slave.slave_id}
+                            </div>
                             <div className="text-xs text-dim font-mono">{slave.ip || slave.address || 'localhost'}:{slave.port || 8080} • Containers: {slave.container_count ?? 0} • Tags: {tagList}</div>
                           </div>
                           <span className={`badge ${isOnline ? 'badge-ok' : 'badge-error'}`}>
                             {isOnline ? 'ONLINE' : 'OFFLINE'}
                           </span>
                         </div>
+                        {renderHostGauges(slave.host_stats, isOnline)}
                       </div>
                     );
                   })}

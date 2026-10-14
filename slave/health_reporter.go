@@ -2,6 +2,9 @@ package main
 
 import (
 	"bufio"
+	"os"
+	"strconv"
+	"syscall"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,12 +28,24 @@ type ContainerStats struct {
 	MemPct     float64 `json:"mem_pct"`
 }
 
+type HostStats struct {
+	CPUPct      float64 `json:"cpu_pct"`
+	MemUsedGB   float64 `json:"mem_used_gb"`
+	MemTotalGB  float64 `json:"mem_total_gb"`
+	MemPct      float64 `json:"mem_pct"`
+	DiskUsedGB  float64 `json:"disk_used_gb"`
+	DiskTotalGB float64 `json:"disk_total_gb"`
+	DiskPct     float64 `json:"disk_pct"`
+}
+
 type HealthReporter struct {
 	cli             *client.Client
 	masterClient    *MasterClient
 	cfg             Config
 	memThresholdPct float64
 	streamer        *EventStreamer
+	prevCPUTotal    float64
+	prevCPUIdle     float64
 }
 
 func NewHealthReporter(cli *client.Client, mc *MasterClient, cfg Config, streamer *EventStreamer) *HealthReporter {
@@ -198,10 +213,12 @@ func (h *HealthReporter) checkAllStats(ctx context.Context) {
 	if len(allStats) == 0 {
 		return
 	}
+	hostStats := h.sampleHostStats()
 	payload, _ := json.Marshal(map[string]any{
-		"slave_id": h.cfg.SlaveID,
-		"stats":    allStats,
-		"ts":       time.Now().Unix(),
+		"slave_id":   h.cfg.SlaveID,
+		"stats":      allStats,
+		"host_stats": hostStats,
+		"ts":         time.Now().Unix(),
 	})
 	_ = h.masterClient.postRaw(ctx, "/slaves/stats", payload)
 }
@@ -256,6 +273,102 @@ func (h *HealthReporter) sampleStats(ctx context.Context, id, name string) (Cont
 		MemLimitMB: r2(memLimit),
 		MemPct:     r2(memPct),
 	}, nil
+}
+
+
+func sampleHostDisk() (usedGB, totalGB, pct float64) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs("/", &stat); err != nil {
+		return 0, 0, 0
+	}
+	totalBytes := float64(stat.Blocks) * float64(stat.Bsize)
+	freeBytes := float64(stat.Bfree) * float64(stat.Bsize)
+	usedBytes := totalBytes - freeBytes
+
+	totalGB = r2(totalBytes / (1024 * 1024 * 1024))
+	usedGB = r2(usedBytes / (1024 * 1024 * 1024))
+	if totalGB > 0 {
+		pct = r2((usedGB / totalGB) * 100)
+	}
+	return
+}
+
+func sampleHostMem() (usedGB, totalGB, pct float64) {
+	file, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, 0, 0
+	}
+	defer file.Close()
+
+	var memTotalKB, memAvailKB float64
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			if parts[0] == "MemTotal:" {
+				memTotalKB, _ = strconv.ParseFloat(parts[1], 64)
+			} else if parts[0] == "MemAvailable:" {
+				memAvailKB, _ = strconv.ParseFloat(parts[1], 64)
+			}
+		}
+	}
+	if memTotalKB > 0 {
+		memUsedKB := memTotalKB - memAvailKB
+		totalGB = r2(memTotalKB / (1024 * 1024))
+		usedGB = r2(memUsedKB / (1024 * 1024))
+		pct = r2((usedGB / totalGB) * 100)
+	}
+	return
+}
+
+func (h *HealthReporter) sampleHostCPU() float64 {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0.0
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 {
+		return 0.0
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0.0
+	}
+	var total, idle float64
+	for i := 1; i < len(fields); i++ {
+		val, _ := strconv.ParseFloat(fields[i], 64)
+		total += val
+		if i == 4 {
+			idle = val
+		}
+	}
+	if h.prevCPUTotal > 0 && total > h.prevCPUTotal {
+		totalDelta := total - h.prevCPUTotal
+		idleDelta := idle - h.prevCPUIdle
+		cpuPct := (1.0 - (idleDelta / totalDelta)) * 100.0
+		h.prevCPUTotal = total
+		h.prevCPUIdle = idle
+		return r2(cpuPct)
+	}
+	h.prevCPUTotal = total
+	h.prevCPUIdle = idle
+	return 0.0
+}
+
+func (h *HealthReporter) sampleHostStats() HostStats {
+	memUsed, memTotal, memPct := sampleHostMem()
+	diskUsed, diskTotal, diskPct := sampleHostDisk()
+	cpuPct := h.sampleHostCPU()
+	return HostStats{
+		CPUPct:      cpuPct,
+		MemUsedGB:   memUsed,
+		MemTotalGB:  memTotal,
+		MemPct:      memPct,
+		DiskUsedGB:  diskUsed,
+		DiskTotalGB: diskTotal,
+		DiskPct:     diskPct,
+	}
 }
 
 func r2(f float64) float64 { return float64(int(f*100)) / 100 }

@@ -15,6 +15,7 @@ class SlaveNode:
     last_heartbeat: float = field(default_factory=time.time)
     container_count: int = 0
     tags: list = field(default_factory=list)
+    host_stats: dict = field(default_factory=dict)
 
     @property
     def is_online(self) -> bool:
@@ -36,6 +37,7 @@ class SlaveNode:
             "registered_at": self.registered_at,
             "last_heartbeat": self.last_heartbeat,
             "tags": self.tags,
+            "host_stats": self.host_stats,
             "seconds_since_ping": round(time.time() - self.last_heartbeat, 1),
         }
 
@@ -71,6 +73,10 @@ class SlaveRegistry:
             if slave_id in self._slaves:
                 del self._slaves[slave_id]
                 print(f"[Registry] Slave deregistered: {slave_id}")
+
+    def update_host_stats(self, slave_id: str, host_stats: dict):
+        if slave_id in self._slaves and host_stats:
+            self._slaves[slave_id].host_stats = host_stats
 
     def get(self, slave_id: str) -> Optional[SlaveNode]:
         return self._slaves.get(slave_id)

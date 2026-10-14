@@ -13,23 +13,27 @@ BUILTIN_RUNBOOKS = [
     {
         "id": "rb-restart-unhealthy",
         "name": "Restart unhealthy containers",
-        "description": "Restart all containers not in running state",
+        "description": "Restart all containers not in running state with verification",
         "trigger": "manual",
+        "stop_on_failure": 1,
+        "retry_count": 2,
         "steps": json.dumps([
-            {"type": "log_check",  "description": "Check logs before restart"},
-            {"type": "restart",    "description": "Restart the container"},
+            {"type": "log_check",  "description": "Check logs before restart", "optional": True},
+            {"type": "restart",    "description": "Restart the container", "retry_count": 2},
             {"type": "log_check",  "description": "Verify recovery after restart"},
         ]),
     },
     {
         "id": "rb-crash-loop-recover",
         "name": "Crash loop recovery",
-        "description": "Pull latest image and restart on crash loop",
+        "description": "Graceful stop, pull/recovery execution, and fresh start",
         "trigger": "crash_loop",
+        "stop_on_failure": 1,
+        "retry_count": 1,
         "steps": json.dumps([
             {"type": "stop",       "description": "Stop the crashing container"},
-            {"type": "exec",       "command": "echo recovering", "description": "Log recovery attempt"},
-            {"type": "start",      "description": "Start fresh"},
+            {"type": "exec",       "command": "echo recovering", "description": "Log recovery attempt", "optional": True},
+            {"type": "start",      "description": "Start fresh", "retry_count": 2},
             {"type": "log_check",  "description": "Check recovery logs"},
         ]),
     },
@@ -38,6 +42,8 @@ BUILTIN_RUNBOOKS = [
         "name": "Full health check",
         "description": "Check logs on all running containers and surface anomalies",
         "trigger": "manual",
+        "stop_on_failure": 0,
+        "retry_count": 1,
         "steps": json.dumps([
             {"type": "log_check", "description": "Analyze recent logs"},
         ]),
@@ -52,10 +58,10 @@ class RunbookEngine:
         async with get_db() as db:
             for rb in BUILTIN_RUNBOOKS:
                 await db.execute(
-                    """INSERT OR IGNORE INTO runbooks(id,name,description,trigger,steps,created_at)
-                       VALUES(?,?,?,?,?,?)""",
+                    """INSERT OR IGNORE INTO runbooks(id,name,description,trigger,steps,stop_on_failure,retry_count,created_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
                     (rb["id"], rb["name"], rb["description"],
-                     rb["trigger"], rb["steps"], time.time())
+                     rb["trigger"], rb["steps"], rb.get("stop_on_failure", 1), rb.get("retry_count", 1), time.time())
                 )
             await db.commit()
 
@@ -83,39 +89,70 @@ class RunbookEngine:
                 return dict(row) if row else None
 
     async def create_runbook(self, name: str, description: str,
-                              trigger: str, steps: list) -> str:
+                              trigger: str, steps: list,
+                              stop_on_failure: bool = True,
+                              retry_count: int = 1) -> str:
         rb_id = f"rb-{str(uuid.uuid4())[:6]}"
         async with get_db() as db:
             await db.execute(
-                "INSERT INTO runbooks(id,name,description,trigger,steps,created_at) VALUES(?,?,?,?,?,?)",
-                (rb_id, name, description, trigger, json.dumps(steps), time.time())
+                """INSERT INTO runbooks(id,name,description,trigger,steps,stop_on_failure,retry_count,created_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (rb_id, name, description, trigger, json.dumps(steps),
+                 1 if stop_on_failure else 0, retry_count, time.time())
             )
             await db.commit()
         return rb_id
 
     async def execute_runbook(self, runbook_id: str,
-                               slave_id: str, container: str) -> dict:
+                               slave_id: str, container: str,
+                               stop_on_failure: Optional[bool] = None,
+                               retry_count: Optional[int] = None) -> dict:
         rb = await self.get_runbook(runbook_id)
         if not rb:
             return {"success": False, "error": f"Runbook '{runbook_id}' not found"}
         if not rb["enabled"]:
             return {"success": False, "error": "Runbook is disabled"}
 
+        should_stop = stop_on_failure if stop_on_failure is not None else bool(rb.get("stop_on_failure", 1))
+        default_retries = retry_count if retry_count is not None else int(rb.get("retry_count", 1))
+
         steps = json.loads(rb["steps"])
         results = []
-        success = True
+        overall_success = True
+        stopped_early = False
 
         for i, step in enumerate(steps):
-            step_result = await self._run_step(step, slave_id, container)
+            step_retries = step.get("retry_count", default_retries)
+            is_optional = step.get("optional", False)
+            step_result = None
+            attempts_made = 0
+
+            # Step execution loop with retries and exponential backoff
+            for attempt in range(step_retries + 1):
+                attempts_made = attempt + 1
+                step_result = await self._run_step(step, slave_id, container)
+                if step_result.get("success", True):
+                    break
+                if attempt < step_retries:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+
+            step_success = step_result.get("success", True) if step_result else False
             results.append({
                 "step": i + 1,
                 "description": step.get("description", step["type"]),
                 "type": step["type"],
+                "attempts": attempts_made,
+                "optional": is_optional,
+                "success": step_success,
                 "result": step_result,
             })
-            if not step_result.get("success", True):
-                success = False
-                # Continue on failure — collect all results
+
+            if not step_success:
+                if not is_optional:
+                    overall_success = False
+                    if should_stop:
+                        stopped_early = True
+                        break
 
         # Update run stats
         async with get_db() as db:
@@ -127,14 +164,15 @@ class RunbookEngine:
 
         await audit("runbook_executed", target=runbook_id,
                     slave_id=slave_id, container=container,
-                    result={"success": success, "steps_run": len(results)})
+                    result={"success": overall_success, "steps_run": len(results), "stopped_early": stopped_early})
 
         return {
             "runbook_id": runbook_id,
             "runbook_name": rb["name"],
             "slave_id": slave_id,
             "container": container,
-            "success": success,
+            "success": overall_success,
+            "stopped_on_failure": stopped_early,
             "steps": results,
             "ts": time.time(),
         }

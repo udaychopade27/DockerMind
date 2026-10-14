@@ -316,6 +316,40 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
 
+  // Runbooks State (Phase 3)
+  const [runbooks, setRunbooks] = useState([]);
+  const [selectedRunbookId, setSelectedRunbookId] = useState('');
+  const [rbTargetSlave, setRbTargetSlave] = useState('local');
+  const [rbTargetContainer, setRbTargetContainer] = useState('dockermind-slave-local');
+  const [rbStopOnFailure, setRbStopOnFailure] = useState(true);
+  const [rbRetryCount, setRbRetryCount] = useState(1);
+  const [rbExecuting, setRbExecuting] = useState(false);
+  const [rbExecutionResult, setRbExecutionResult] = useState(null);
+
+  // Create Runbook Modal State
+  const [createRbModalOpen, setCreateRbModalOpen] = useState(false);
+  const [newRbName, setNewRbName] = useState('');
+  const [newRbDesc, setNewRbDesc] = useState('');
+  const [newRbTrigger, setNewRbTrigger] = useState('manual');
+  const [newRbStopOnFailure, setNewRbStopOnFailure] = useState(true);
+  const [newRbRetryCount, setNewRbRetryCount] = useState(1);
+  const [newRbSteps, setNewRbSteps] = useState([
+    { type: 'log_check', description: 'Pre-flight log verification', optional: true },
+    { type: 'restart', description: 'Container restart', retry_count: 2 },
+    { type: 'log_check', description: 'Verify service recovery' },
+  ]);
+
+  // Webhook & Alerting Settings Modal State (Phase 3)
+  const [webhookModalOpen, setWebhookModalOpen] = useState(false);
+  const [webhookSettings, setWebhookSettings] = useState({
+    slack_webhook_url: '',
+    discord_webhook_url: '',
+    generic_webhook_url: '',
+    min_severity: 'warn',
+  });
+  const [webhookSaving, setWebhookSaving] = useState(false);
+  const [webhookTesting, setWebhookTesting] = useState(false);
+
   // Toast Notifications
   const [toasts, setToasts] = useState([]);
 
@@ -356,7 +390,7 @@ export default function App() {
   // Initialize Data concurrently with Promise.all
   const refreshAll = async () => {
     try {
-      const [slavesData, containersData, alertsData, crashData, auditData, jobsData, meData] = await Promise.all([
+      const [slavesData, containersData, alertsData, crashData, auditData, jobsData, meData, runbooksData] = await Promise.all([
         apiFetch('/slaves'),
         apiFetch('/containers'),
         apiFetch('/alerts'),
@@ -364,6 +398,7 @@ export default function App() {
         apiFetch('/jobs/audit/log?limit=25'),
         apiFetch('/jobs'),
         apiFetch('/auth/me'),
+        apiFetch('/runbooks'),
       ]);
 
       if (slavesData?.slaves) setSlaves(slavesData.slaves);
@@ -374,6 +409,12 @@ export default function App() {
       if (auditData?.audit_log) setAuditLogs(auditData.audit_log);
       if (jobsData?.jobs) setJobs(jobsData.jobs);
       if (meData?.username) setCurrentUser(meData);
+      if (runbooksData?.runbooks) {
+        setRunbooks(runbooksData.runbooks);
+        if (!selectedRunbookId && runbooksData.runbooks.length > 0) {
+          setSelectedRunbookId(runbooksData.runbooks[0].id);
+        }
+      }
     } catch (e) {
       console.error('refreshAll error:', e);
     }
@@ -391,6 +432,116 @@ export default function App() {
       }).catch(() => handleLogout());
     }
   }, [token]);
+
+  // Webhook Settings Helpers (Phase 3)
+  const openWebhookModal = async () => {
+    setWebhookModalOpen(true);
+    const data = await apiFetch('/alerts/settings');
+    if (data) {
+      setWebhookSettings({
+        slack_webhook_url: data.slack_webhook_url || '',
+        discord_webhook_url: data.discord_webhook_url || '',
+        generic_webhook_url: data.generic_webhook_url || '',
+        min_severity: data.min_severity || 'warn',
+      });
+    }
+  };
+
+  const handleSaveWebhookSettings = async () => {
+    setWebhookSaving(true);
+    const res = await apiFetch('/alerts/settings', {
+      method: 'POST',
+      body: JSON.stringify(webhookSettings),
+    });
+    setWebhookSaving(false);
+    if (res?.status === 'updated') {
+      addToast('ok', 'Alert Settings Saved', 'Slack/Discord webhook configuration persisted to database.');
+      setWebhookModalOpen(false);
+    } else {
+      addToast('crit', 'Save Failed', res?.detail || 'Could not update alert settings.');
+    }
+  };
+
+  const handleSendTestWebhook = async () => {
+    setWebhookTesting(true);
+    const res = await apiFetch('/alerts/test-webhook', { method: 'POST' });
+    setWebhookTesting(false);
+    if (res?.status === 'dispatched') {
+      const slackRes = res.results?.slack || 'not_configured';
+      const discordRes = res.results?.discord || 'not_configured';
+      addToast('ok', 'Diagnostic Ping Dispatched', `Slack: ${slackRes} | Discord: ${discordRes}`);
+    } else {
+      addToast('crit', 'Test Failed', 'Could not dispatch test notification.');
+    }
+  };
+
+  // Runbook Execution Helpers (Phase 3)
+  const handleExecuteRunbook = async (runbookId) => {
+    if (!rbTargetContainer) {
+      addToast('warn', 'Container Required', 'Please enter or select a target container.');
+      return;
+    }
+    setRbExecuting(true);
+    setRbExecutionResult(null);
+    const res = await apiFetch(`/runbooks/${runbookId}/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        slave_id: rbTargetSlave,
+        container: rbTargetContainer,
+        stop_on_failure: rbStopOnFailure,
+        retry_count: rbRetryCount,
+      }),
+    });
+    setRbExecuting(false);
+    if (res) {
+      setRbExecutionResult(res);
+      if (res.success) {
+        addToast('ok', 'Runbook Passed', `${res.runbook_name} completed all steps successfully.`);
+      } else {
+        addToast('crit', 'Runbook Execution Failed', `${res.runbook_name} failed ${res.stopped_on_failure ? '(Execution halted early by Stop on Failure policy)' : ''}`);
+      }
+      refreshAll();
+    }
+  };
+
+  const handleCreateRunbook = async () => {
+    if (!newRbName.trim() || newRbSteps.length === 0) {
+      addToast('warn', 'Validation Error', 'Runbook must have a valid name and at least one step.');
+      return;
+    }
+    const res = await apiFetch('/runbooks', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: newRbName.trim(),
+        description: newRbDesc.trim(),
+        trigger: newRbTrigger,
+        stop_on_failure: newRbStopOnFailure,
+        retry_count: newRbRetryCount,
+        steps: newRbSteps,
+      }),
+    });
+    if (res?.status === 'created') {
+      addToast('ok', 'Runbook Created', `Runbook '${newRbName}' created with automated execution policy.`);
+      setCreateRbModalOpen(false);
+      setNewRbName('');
+      setNewRbDesc('');
+      refreshAll();
+    } else {
+      addToast('crit', 'Creation Failed', res?.detail || 'Could not create runbook.');
+    }
+  };
+
+  const handleAddStepToNewRb = () => {
+    setNewRbSteps(prev => [...prev, { type: 'log_check', description: 'Additional verification step' }]);
+  };
+
+  const handleUpdateNewRbStep = (index, field, value) => {
+    setNewRbSteps(prev => prev.map((s, i) => i === index ? { ...s, [field]: value } : s));
+  };
+
+  const handleRemoveNewRbStep = (index) => {
+    setNewRbSteps(prev => prev.filter((_, i) => i !== index));
+  };
 
   // Fetch Container Logs
   const fetchLogs = async (containerName) => {
@@ -748,6 +899,10 @@ export default function App() {
             <Sliders size={18} />
             <span>Fleet Dispatch</span>
           </div>
+          <div className={`nav-item ${activeTab === 'runbooks' ? 'active' : ''}`} onClick={() => setActiveTab('runbooks')}>
+            <ListOrdered size={18} />
+            <span>Automated Runbooks</span>
+          </div>
           <div className={`nav-item ${activeTab === 'audit' ? 'active' : ''}`} onClick={() => setActiveTab('audit')}>
             <FileText size={18} />
             <span>Audit & Jobs</span>
@@ -1087,9 +1242,14 @@ export default function App() {
           {activeTab === 'incidents' && (
             <div>
               <div className="mb-6">
-                <h3 className="text-base font-semibold mb-3 flex items-center gap-2">
-                  <RefreshCw size={18} className="text-amber" /> Active Crash Loops & Circuit Breakers (Task 2 & 3)
-                </h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <h3 className="text-base font-semibold flex items-center gap-2">
+                    <RefreshCw size={18} className="text-amber" /> Active Crash Loops & Circuit Breakers (Task 2 & 3)
+                  </h3>
+                  <button className="btn btn-secondary btn-sm" onClick={openWebhookModal}>
+                    <Radio size={14} className="text-violet" /> Alerting & Webhooks
+                  </button>
+                </div>
 
                 {crashLoops.length === 0 ? (
                   <div className="card-glass" style={{ textAlign: 'center', padding: '2rem' }}>
@@ -1306,6 +1466,254 @@ export default function App() {
                         <div className="terminal-window" style={{ height: '140px' }}>
                           <div className="terminal-body font-mono text-xs" style={{ height: '100%', padding: '0.5rem' }}>
                             {res.output || res.error || JSON.stringify(res, null, 2)}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── TAB 4.5: AUTOMATED RUNBOOKS (Phase 3) ── */}
+          {activeTab === 'runbooks' && (
+            <div>
+              <div className="card-glass mb-6">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                  <div>
+                    <h3 className="text-base font-semibold flex items-center gap-2">
+                      <ListOrdered size={18} className="text-cyan" /> Automated Remediation Runbooks (Phase 3)
+                    </h3>
+                    <div className="text-xs text-dim">Pre-flight verification, exponential retry backoff, and strict stop_on_failure execution policies</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    {isAdmin && (
+                      <button className="btn btn-secondary btn-sm" onClick={() => setCreateRbModalOpen(true)}>
+                        + Create Runbook
+                      </button>
+                    )}
+                    <button className="btn btn-secondary btn-sm" onClick={openWebhookModal}>
+                      <Radio size={14} className="text-violet" /> Webhook Alerting
+                    </button>
+                  </div>
+                </div>
+
+                {/* Runbooks Listing Grid */}
+                <div className="grid grid-cols-3 gap-4 mb-6">
+                  {runbooks.map((rb) => {
+                    const isSelected = selectedRunbookId === rb.id;
+                    const steps = typeof rb.steps === 'string' ? JSON.parse(rb.steps || '[]') : (rb.steps || []);
+                    return (
+                      <div
+                        key={rb.id}
+                        className={`card-glass cursor-pointer ${isSelected ? 'border-cyan' : ''}`}
+                        style={{
+                          padding: '1rem',
+                          background: isSelected ? 'rgba(6, 182, 212, 0.08)' : 'rgba(15, 23, 42, 0.5)',
+                          borderColor: isSelected ? 'var(--cyan-400)' : 'var(--border-subtle)',
+                          transition: 'all 0.2s',
+                        }}
+                        onClick={() => setSelectedRunbookId(rb.id)}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                          <span className="font-semibold text-sm text-cyan">{rb.name}</span>
+                          <span className="badge badge-secondary text-xs">{rb.trigger || 'manual'}</span>
+                        </div>
+                        <div className="text-xs text-muted mb-3" style={{ minHeight: '32px' }}>
+                          {rb.description || 'No description provided.'}
+                        </div>
+
+                        {/* Policy Badges */}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem' }}>
+                          <span className={`badge ${rb.stop_on_failure !== 0 ? 'badge-warn' : 'badge-secondary'}`} style={{ fontSize: '0.65rem' }}>
+                            {rb.stop_on_failure !== 0 ? 'STOP ON FAILURE: YES' : 'STOP ON FAILURE: NO'}
+                          </span>
+                          <span className="badge badge-ok" style={{ fontSize: '0.65rem' }}>
+                            RETRIES: {rb.retry_count !== undefined ? rb.retry_count : 1}
+                          </span>
+                          <span className="badge badge-secondary" style={{ fontSize: '0.65rem' }}>
+                            {steps.length} STEPS
+                          </span>
+                        </div>
+
+                        <div className="text-xs text-dim font-mono" style={{ fontSize: '0.7rem' }}>
+                          Runs: {rb.run_count || 0} • Last: {rb.last_run ? new Date(rb.last_run * 1000).toLocaleTimeString() : 'Never'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Selected Runbook Execution Console */}
+                {(() => {
+                  const currentRb = runbooks.find(r => r.id === selectedRunbookId);
+                  if (!currentRb) return null;
+                  const currentSteps = typeof currentRb.steps === 'string' ? JSON.parse(currentRb.steps || '[]') : (currentRb.steps || []);
+
+                  return (
+                    <div className="p-4 rounded" style={{ background: 'rgba(15,23,42,0.7)', border: '1px solid var(--border-subtle)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                        <div>
+                          <div className="font-bold text-sm text-cyan flex items-center gap-2">
+                            <span>Target Execution:</span> <span className="text-slate-200">{currentRb.name}</span>
+                          </div>
+                          <div className="text-xs text-dim">{currentRb.description}</div>
+                        </div>
+                        {!isOperator && (
+                          <span className="badge badge-warn text-xs">Read-Only: Operator role required to execute</span>
+                        )}
+                      </div>
+
+                      {/* Step Pipeline Visualization */}
+                      <div className="mb-4">
+                        <label className="text-xs text-muted block mb-2">Step Execution Pipeline ({currentSteps.length} steps):</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
+                          {currentSteps.map((s, idx) => (
+                            <React.Fragment key={idx}>
+                              <div className="p-2 rounded text-xs" style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #334155', minWidth: '160px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                                  <span className="font-mono text-cyan font-bold">Step {idx + 1}</span>
+                                  <span className="badge badge-secondary text-xs">{s.type}</span>
+                                </div>
+                                <div className="text-slate-300 font-medium truncate">{s.description || s.type}</div>
+                                {s.optional && <div className="text-dim text-xs mt-1">Optional step</div>}
+                              </div>
+                              {idx < currentSteps.length - 1 && <ChevronRight size={16} className="text-dim" />}
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Execution Targets & Policy Overrides */}
+                      <div className="grid grid-cols-4 gap-4 mb-4">
+                        <div>
+                          <label className="text-xs text-muted block mb-1">Target Node</label>
+                          <select
+                            className="input-field"
+                            value={rbTargetSlave}
+                            onChange={(e) => setRbTargetSlave(e.target.value)}
+                          >
+                            <option value="local">Master Host (local)</option>
+                            {slaves.map(s => (
+                              <option key={s.slave_id} value={s.slave_id}>{s.slave_id} ({s.ip})</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-xs text-muted block mb-1">Target Container</label>
+                          <select
+                            className="input-field"
+                            value={rbTargetContainer}
+                            onChange={(e) => setRbTargetContainer(e.target.value)}
+                          >
+                            {containers.map(c => (
+                              <option key={c.name} value={c.name}>{c.name} ({c.status})</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-xs text-muted block mb-1">Stop on Failure</label>
+                          <select
+                            className="input-field"
+                            value={rbStopOnFailure ? 'yes' : 'no'}
+                            onChange={(e) => setRbStopOnFailure(e.target.value === 'yes')}
+                          >
+                            <option value="yes">Enabled (Halt immediately on step error)</option>
+                            <option value="no">Disabled (Continue through remaining steps)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-xs text-muted block mb-1">Step Retry Count</label>
+                          <select
+                            className="input-field"
+                            value={rbRetryCount}
+                            onChange={(e) => setRbRetryCount(parseInt(e.target.value, 10))}
+                          >
+                            <option value="0">0 (Fail immediately, no retries)</option>
+                            <option value="1">1 Retry (1.5s exponential backoff)</option>
+                            <option value="2">2 Retries (1.5s, 3.0s backoff)</option>
+                            <option value="3">3 Retries (1.5s, 3.0s, 4.5s backoff)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn btn-primary"
+                        disabled={rbExecuting || !isOperator}
+                        onClick={() => handleExecuteRunbook(currentRb.id)}
+                      >
+                        <Play size={14} /> {rbExecuting ? 'Executing Runbook Pipeline...' : `Execute ${currentRb.name} Now`}
+                      </button>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Execution Outcome & Step Trace */}
+              {rbExecutionResult && (
+                <div className="card-glass">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                    <div>
+                      <div className="font-semibold text-base flex items-center gap-2">
+                        {rbExecutionResult.success ? (
+                          <CheckCircle2 size={18} className="text-emerald" />
+                        ) : (
+                          <XCircle size={18} className="text-rose" />
+                        )}
+                        <span>Runbook Execution: {rbExecutionResult.runbook_name}</span>
+                      </div>
+                      <div className="text-xs text-dim">
+                        Target: <span className="text-cyan font-mono">{rbExecutionResult.container}</span> on node <span className="font-mono">{rbExecutionResult.slave_id}</span>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      {rbExecutionResult.stopped_on_failure && (
+                        <span className="badge badge-warn text-xs">STOPPED ON FAILURE</span>
+                      )}
+                      <span className={`badge ${rbExecutionResult.success ? 'badge-ok' : 'badge-crit'}`}>
+                        {rbExecutionResult.success ? 'PIPELINE PASSED' : 'PIPELINE FAILED'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {rbExecutionResult.stopped_on_failure && (
+                    <div className="alert-crit p-3 rounded mb-4" style={{ fontSize: '0.8rem' }}>
+                      ⚠️ <strong>Stop on Failure Policy Enforced:</strong> Step execution was halted immediately upon step failure to prevent cascading cluster damage. Subsequent steps were safely aborted.
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 gap-3">
+                    {rbExecutionResult.steps?.map((stepItem) => (
+                      <div
+                        key={stepItem.step}
+                        className="card-glass"
+                        style={{
+                          borderLeft: `4px solid ${stepItem.success ? 'var(--emerald-400)' : 'var(--rose-400)'}`,
+                          padding: '0.85rem 1rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                          <div className="font-mono text-sm font-semibold flex items-center gap-2">
+                            <span>Step {stepItem.step}:</span>
+                            <span className="text-cyan">{stepItem.description}</span>
+                            <span className="badge badge-secondary text-xs">{stepItem.type}</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <span className="text-xs text-dim font-mono">Attempts: {stepItem.attempts}</span>
+                            <span className={`badge ${stepItem.success ? 'badge-ok' : 'badge-error'}`}>
+                              {stepItem.success ? 'SUCCESS' : 'FAILED'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="terminal-window" style={{ height: '70px' }}>
+                          <div className="terminal-body font-mono text-xs" style={{ padding: '0.4rem 0.6rem' }}>
+                            {JSON.stringify(stepItem.result, null, 2)}
                           </div>
                         </div>
                       </div>

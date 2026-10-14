@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await alert_store.load_from_db()
     await runbook_engine.seed_builtins()
+    await notifier.load_settings()
     llm_ok = await llm_client.check_ollama_health()
     print(f"[LLM] provider={llm_client.LLM_PROVIDER}  reachable={llm_ok}  model=gemini:{llm_client.GEMINI_MODEL} | openrouter:{llm_client.OPENROUTER_MODEL} | ollama:{llm_client.LLM_MODEL}")
     if llm_ok:

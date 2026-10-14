@@ -95,5 +95,78 @@ class Notifier:
             print(f"[Notifier] Failed to send notification: {e}")
 
 
+
+    async def load_settings(self):
+        """Load webhook configuration from database, falling back to env vars."""
+        try:
+            from database import db_get_all_settings
+            stored = await db_get_all_settings()
+            self.slack_url = stored.get("slack_webhook_url", os.getenv("SLACK_WEBHOOK_URL", ""))
+            self.discord_url = stored.get("discord_webhook_url", os.getenv("DISCORD_WEBHOOK_URL", ""))
+            self.webhook_url = stored.get("generic_webhook_url", os.getenv("GENERIC_WEBHOOK_URL", ""))
+            self.min_severity = stored.get("min_severity", os.getenv("NOTIFY_MIN_SEVERITY", "warn"))
+            print(f"[Notifier] Webhook settings loaded. Slack configured: {bool(self.slack_url)}, Discord configured: {bool(self.discord_url)}, Min Severity: {self.min_severity}")
+        except Exception as e:
+            print(f"[Notifier] Could not load settings from DB: {e}")
+
+    def get_config(self) -> dict:
+        """Return current webhook configuration state."""
+        return {
+            "slack_configured": bool(self.slack_url),
+            "discord_configured": bool(self.discord_url),
+            "generic_configured": bool(self.webhook_url),
+            "slack_webhook_url": self.slack_url if self.slack_url else "",
+            "discord_webhook_url": self.discord_url if self.discord_url else "",
+            "generic_webhook_url": self.webhook_url if self.webhook_url else "",
+            "min_severity": self.min_severity,
+        }
+
+    async def update_config(self, slack_url: Optional[str] = None, discord_url: Optional[str] = None,
+                            generic_url: Optional[str] = None, min_severity: Optional[str] = None):
+        """Update webhook configuration and persist to SQLite."""
+        from database import db_set_setting
+        if slack_url is not None:
+            self.slack_url = slack_url.strip()
+            await db_set_setting("slack_webhook_url", self.slack_url)
+        if discord_url is not None:
+            self.discord_url = discord_url.strip()
+            await db_set_setting("discord_webhook_url", self.discord_url)
+        if generic_url is not None:
+            self.webhook_url = generic_url.strip()
+            await db_set_setting("generic_webhook_url", self.webhook_url)
+        if min_severity is not None and min_severity in ("warn", "error", "critical"):
+            self.min_severity = min_severity
+            await db_set_setting("min_severity", self.min_severity)
+
+    async def send_test_notification(self) -> dict:
+        """Send a diagnostic test alert to all configured webhooks."""
+        test_alert = {
+            "severity": "warn",
+            "container_name": "dockermind-platform",
+            "slave_id": "master (local)",
+            "root_cause": "Diagnostic ping — webhook delivery verification test",
+            "fix": "No action needed. Notifications are operational.",
+        }
+        results = {}
+        if self.slack_url:
+            try:
+                await self._send_slack(test_alert)
+                results["slack"] = "sent"
+            except Exception as e:
+                results["slack"] = f"error: {str(e)}"
+        else:
+            results["slack"] = "not_configured"
+
+        if self.discord_url:
+            try:
+                await self._send_discord(test_alert)
+                results["discord"] = "sent"
+            except Exception as e:
+                results["discord"] = f"error: {str(e)}"
+        else:
+            results["discord"] = "not_configured"
+
+        return results
+
 # Global singleton
 notifier = Notifier()

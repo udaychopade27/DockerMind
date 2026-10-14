@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -15,11 +15,15 @@ class CreateRunbookRequest(BaseModel):
     description: str = ""
     trigger: str = "manual"
     steps: List[dict]
+    stop_on_failure: bool = True
+    retry_count: int = 1
 
 
 class ExecuteRequest(BaseModel):
     slave_id: str = "local"
     container: str
+    stop_on_failure: Optional[bool] = None
+    retry_count: Optional[int] = None
 
 
 @router.get("", summary="List all runbooks (viewer+)")
@@ -38,6 +42,8 @@ async def create_runbook(
         description=req.description,
         trigger=req.trigger,
         steps=req.steps,
+        stop_on_failure=req.stop_on_failure,
+        retry_count=req.retry_count,
     )
     return {"runbook_id": rb_id, "status": "created"}
 
@@ -60,6 +66,8 @@ async def execute_runbook(
         runbook_id=runbook_id,
         slave_id=req.slave_id,
         container=req.container,
+        stop_on_failure=req.stop_on_failure,
+        retry_count=req.retry_count,
     )
     if not result.get("success"):
         await notifier.notify_alert({

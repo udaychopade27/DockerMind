@@ -49,3 +49,37 @@ async def crash_summary(user: dict = Depends(get_current_user)):
         "crash_loops":  crash_detector.summary(),
         "alert_counts": alert_store.counts(),
     }
+from typing import Optional
+from pydantic import BaseModel
+from services.notifier import notifier
+
+class AlertSettingsRequest(BaseModel):
+    slack_webhook_url: Optional[str] = None
+    discord_webhook_url: Optional[str] = None
+    generic_webhook_url: Optional[str] = None
+    min_severity: Optional[str] = "warn"
+
+
+@router.get("/settings", summary="Get webhook and alerting settings (viewer+)")
+async def get_alert_settings(user: dict = Depends(get_current_user)):
+    return notifier.get_config()
+
+
+@router.post("/settings", summary="Update webhook alerting settings (operator+)")
+async def update_alert_settings(
+    req: AlertSettingsRequest,
+    user: dict = Depends(require_role("operator")),
+):
+    await notifier.update_config(
+        slack_url=req.slack_webhook_url,
+        discord_url=req.discord_webhook_url,
+        generic_url=req.generic_webhook_url,
+        min_severity=req.min_severity,
+    )
+    return {"status": "updated", "config": notifier.get_config()}
+
+
+@router.post("/test-webhook", summary="Send test alert to webhooks (operator+)")
+async def test_webhook(user: dict = Depends(require_role("operator"))):
+    results = await notifier.send_test_notification()
+    return {"status": "dispatched", "results": results}

@@ -102,7 +102,25 @@ async def init_db():
         CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
         CREATE INDEX IF NOT EXISTS idx_alerts_container ON alerts(container_name);
         CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
         """)
+
+        # Safely migrate runbooks table to add stop_on_failure and retry_count if not present
+        try:
+            await db.execute("ALTER TABLE runbooks ADD COLUMN stop_on_failure INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE runbooks ADD COLUMN retry_count INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
         await db.commit()
 
     print(f"[DB] Initialized: {DB_PATH}")
@@ -221,3 +239,40 @@ async def db_load_recent_alerts(limit: int = 500) -> list:
     except Exception as e:
         print(f"[DB] Error loading alerts: {e}")
         return []
+
+
+async def db_get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Retrieve a key-value setting from SQLite."""
+    try:
+        async with get_db() as db:
+            async with db.execute("SELECT value FROM settings WHERE key=?", (key,)) as cur:
+                row = await cur.fetchone()
+                return row["value"] if row else default
+    except Exception as e:
+        print(f"[DB] Error getting setting {key}: {e}")
+        return default
+
+
+async def db_set_setting(key: str, value: str):
+    """Persist a key-value setting to SQLite."""
+    try:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO settings(key, value, updated_at) VALUES(?, ?, ?)",
+                (key, value, time.time())
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[DB] Error saving setting {key}: {e}")
+
+
+async def db_get_all_settings() -> dict:
+    """Retrieve all settings as a dict from SQLite."""
+    try:
+        async with get_db() as db:
+            async with db.execute("SELECT key, value FROM settings") as cur:
+                rows = await cur.fetchall()
+                return {r["key"]: r["value"] for r in rows}
+    except Exception as e:
+        print(f"[DB] Error getting all settings: {e}")
+        return {}

@@ -1,8 +1,29 @@
 import os
 
-# LLM
+# ── LLM provider selection ────────────────────────────────────────────────────
+# LLM_PROVIDER options:
+#   "local"      → Ollama (default — no API key needed)
+#   "online"     → Gemini first, OpenRouter fallback
+#   "gemini"     → Gemini only
+#   "openrouter" → OpenRouter only
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local")
+
+# Ollama (local)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL       = os.getenv("LLM_MODEL", "phi3:mini")   # ~2.2GB, runs fine on 4GB RAM
+
+# Gemini (Google AI Studio — free tier: 15 RPM, 1500 RPD, 1M token context)
+# Get key: https://aistudio.google.com/app/apikey
+# gemini-1.5-flash  → MOST RELIABLE on free tier (confirmed working)
+# gemini-2.0-flash  → may 404 depending on region/key type
+GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# OpenRouter (fallback — use a specific free chat model)
+# Get key: https://openrouter.ai/keys
+# WARNING: "openrouter/free" auto-router can route to moderation models — avoid it
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
 
 # Master API
 MASTER_HOST = os.getenv("MASTER_HOST", "0.0.0.0")

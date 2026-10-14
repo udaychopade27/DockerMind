@@ -31,6 +31,7 @@ type DockerWatcher struct {
 	mu            sync.RWMutex
 	containers    map[string]ContainerInfo
 	restartCounts map[string]int
+	lastLogCheck  map[string]int64
 }
 
 func NewDockerWatcher(socketPath string) (*DockerWatcher, error) {
@@ -54,6 +55,7 @@ func NewDockerWatcher(socketPath string) (*DockerWatcher, error) {
 		cli:           cli,
 		containers:    map[string]ContainerInfo{},
 		restartCounts: map[string]int{},
+		lastLogCheck:  map[string]int64{},
 	}, nil
 }
 
@@ -73,7 +75,6 @@ func (w *DockerWatcher) WatchContainers() {
 	f := filters.NewArgs()
 	f.Add("type", "container")
 
-	// FIX: use types.EventsOptions (not events.ListOptions)
 	eventsOpts := types.EventsOptions{Filters: f}
 	msgCh, errCh := w.cli.Events(ctx, eventsOpts)
 
@@ -164,20 +165,32 @@ func (w *DockerWatcher) handleEvent(msg events.Message) {
 		w.mu.Lock()
 		delete(w.containers, msg.Actor.ID)
 		delete(w.restartCounts, msg.Actor.ID)
+		delete(w.lastLogCheck, msg.Actor.ID)
 		w.mu.Unlock()
 	}
 }
 
 func (w *DockerWatcher) GetLogs(containerID string, tail int) (string, error) {
+	return w.GetNewLogs(containerID, 0, tail)
+}
+
+func (w *DockerWatcher) GetNewLogs(containerID string, since int64, tail int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	rc, err := w.cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+	opts := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
-		Tail:       fmt.Sprintf("%d", tail),
 		Timestamps: false,
-	})
+	}
+	if tail > 0 {
+		opts.Tail = fmt.Sprintf("%d", tail)
+	}
+	if since > 0 {
+		opts.Since = fmt.Sprintf("%d", since)
+	}
+
+	rc, err := w.cli.ContainerLogs(ctx, containerID, opts)
 	if err != nil {
 		return "", err
 	}
@@ -195,8 +208,22 @@ func (w *DockerWatcher) GetLogs(containerID string, tail int) (string, error) {
 	return out.String(), nil
 }
 
+func hasSuspiciousLogs(logs string) bool {
+	lower := strings.ToLower(logs)
+	keywords := []string{
+		"error", "fatal", "exception", "panic", "traceback",
+		"failed", "crash", "oom", "killed", "refused", "critical", "warn",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *DockerWatcher) StartLogForwarder(ctx context.Context, mc *MasterClient, cfg Config) {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -217,15 +244,36 @@ func (w *DockerWatcher) forwardLogs(ctx context.Context, mc *MasterClient) {
 	}
 	w.mu.RUnlock()
 
+	now := time.Now().Unix()
+
 	for _, c := range items {
 		if c.Status != "running" {
 			continue
 		}
-		logs, err := w.GetLogs(c.ID, 50)
-		if err != nil {
+		// Skip self/dockermind internal containers to prevent infinite log loops
+		if strings.HasPrefix(c.Name, "dockermind-") {
 			continue
 		}
-		_ = mc.PushLogs(ctx, c.ID, c.Name, logs)
+
+		w.mu.Lock()
+		since := w.lastLogCheck[c.ID]
+		w.lastLogCheck[c.ID] = now
+		w.mu.Unlock()
+
+		if since == 0 {
+			since = now - 60
+		}
+
+		logs, err := w.GetNewLogs(c.ID, since, 100)
+		if err != nil || strings.TrimSpace(logs) == "" {
+			continue
+		}
+
+		// Only forward if logs contain errors/warnings or anomalies to avoid overloading LLM
+		if hasSuspiciousLogs(logs) {
+			log.Printf("[Watcher] Forwarding suspicious logs for container %s (%d bytes)", c.Name, len(logs))
+			_ = mc.PushLogs(ctx, c.ID, c.Name, logs)
+		}
 	}
 }
 

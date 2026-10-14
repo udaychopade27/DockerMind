@@ -31,6 +31,7 @@ class SlaveNode:
             "ip": self.ip,
             "port": self.port,
             "status": self.status,
+            "is_online": self.is_online,
             "container_count": self.container_count,
             "registered_at": self.registered_at,
             "last_heartbeat": self.last_heartbeat,

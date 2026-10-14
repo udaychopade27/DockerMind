@@ -49,7 +49,7 @@ class RunbookEngine:
 
     async def seed_builtins(self):
         """Insert built-in runbooks if they don't exist yet."""
-        async with await get_db() as db:
+        async with get_db() as db:
             for rb in BUILTIN_RUNBOOKS:
                 await db.execute(
                     """INSERT OR IGNORE INTO runbooks(id,name,description,trigger,steps,created_at)
@@ -60,13 +60,24 @@ class RunbookEngine:
             await db.commit()
 
     async def list_runbooks(self) -> list:
-        async with await get_db() as db:
-            async with db.execute("SELECT * FROM runbooks ORDER BY name") as cur:
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT * FROM runbooks ORDER BY name") as cur:
                 rows = await cur.fetchall()
-                return [dict(r) for r in rows]
+
+                columns = [
+                    desc[0]
+                    for desc in cur.description
+                ]
+
+                return [
+                    dict(zip(columns, row))
+                    for row in rows
+                ]
+
 
     async def get_runbook(self, runbook_id: str) -> Optional[dict]:
-        async with await get_db() as db:
+        async with get_db() as db:
             async with db.execute("SELECT * FROM runbooks WHERE id=?", (runbook_id,)) as cur:
                 row = await cur.fetchone()
                 return dict(row) if row else None
@@ -74,7 +85,7 @@ class RunbookEngine:
     async def create_runbook(self, name: str, description: str,
                               trigger: str, steps: list) -> str:
         rb_id = f"rb-{str(uuid.uuid4())[:6]}"
-        async with await get_db() as db:
+        async with get_db() as db:
             await db.execute(
                 "INSERT INTO runbooks(id,name,description,trigger,steps,created_at) VALUES(?,?,?,?,?,?)",
                 (rb_id, name, description, trigger, json.dumps(steps), time.time())
@@ -107,7 +118,7 @@ class RunbookEngine:
                 # Continue on failure — collect all results
 
         # Update run stats
-        async with await get_db() as db:
+        async with get_db() as db:
             await db.execute(
                 "UPDATE runbooks SET last_run=?, run_count=run_count+1 WHERE id=?",
                 (time.time(), runbook_id)

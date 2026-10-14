@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,8 +17,6 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// HealthReporter watches container stats + lifecycle events and forwards them to master.
-
 type ContainerStats struct {
 	Name       string  `json:"name"`
 	CPUPct     float64 `json:"cpu_pct"`
@@ -31,14 +30,16 @@ type HealthReporter struct {
 	masterClient    *MasterClient
 	cfg             Config
 	memThresholdPct float64
+	streamer        *EventStreamer
 }
 
-func NewHealthReporter(cli *client.Client, mc *MasterClient, cfg Config) *HealthReporter {
+func NewHealthReporter(cli *client.Client, mc *MasterClient, cfg Config, streamer *EventStreamer) *HealthReporter {
 	return &HealthReporter{
 		cli:             cli,
 		masterClient:    mc,
 		cfg:             cfg,
 		memThresholdPct: 90.0,
+		streamer:        streamer,
 	}
 }
 
@@ -48,11 +49,12 @@ func (h *HealthReporter) Run(ctx context.Context) {
 	go h.pollStats(ctx)
 }
 
-// watchEvents listens to Docker event stream and pushes die/oom/start to master.
 func (h *HealthReporter) watchEvents(ctx context.Context) {
 	f := filters.NewArgs()
 	f.Add("type", "container")
-	msgCh, errCh := h.cli.Events(ctx, events.ListOptions{Filters: f})
+
+	opts := types.EventsOptions{Filters: f}
+	msgCh, errCh := h.cli.Events(ctx, opts)
 
 	for {
 		select {
@@ -62,7 +64,7 @@ func (h *HealthReporter) watchEvents(ctx context.Context) {
 			if err != nil && err != io.EOF {
 				log.Printf("[HealthReporter] Event stream error: %v — retrying in 5s", err)
 				time.Sleep(5 * time.Second)
-				msgCh, errCh = h.cli.Events(ctx, events.ListOptions{Filters: f})
+				msgCh, errCh = h.cli.Events(ctx, opts)
 			}
 		case msg := <-msgCh:
 			h.handleEvent(ctx, msg)
@@ -72,29 +74,84 @@ func (h *HealthReporter) watchEvents(ctx context.Context) {
 
 func (h *HealthReporter) handleEvent(ctx context.Context, msg events.Message) {
 	name := msg.Actor.Attributes["name"]
-	switch msg.Action {
+	action := string(msg.Action)
+	cid := msg.Actor.ID
+
+	// Ignore internal dockermind containers (control plane components)
+	if strings.HasPrefix(name, "dockermind-") || name == "" {
+		return
+	}
+
+	switch action {
 	case "die":
 		exitCode := 0
 		if ec, ok := msg.Actor.Attributes["exitCode"]; ok {
 			fmt.Sscanf(ec, "%d", &exitCode)
 		}
 		detail := exitCodeDetail(exitCode)
-		log.Printf("[HealthReporter] die: %s exit=%d", name, exitCode)
-		_ = h.masterClient.PushEvent(ctx, "die", name, detail)
+		log.Printf("[HealthReporter] die: %s (id=%s) exit=%d (%s)", name, cid, exitCode, detail)
+		
+		if h.streamer != nil {
+			h.streamer.Push("die", name, cid, detail, exitCode)
+		} else {
+			_ = h.masterClient.PushEvent(ctx, "die", name, cid, exitCode, detail)
+		}
+
+		// Stream recent logs of dead container to master LLM pipeline immediately
+		go func(containerID, containerName string) {
+			if strings.HasPrefix(containerName, "dockermind-") {
+				return
+			}
+			lCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			rc, err := h.cli.ContainerLogs(lCtx, containerID, container.LogsOptions{
+				ShowStdout: true,
+				ShowStderr: true,
+				Tail:       "60",
+			})
+			if err != nil {
+				return
+			}
+			defer rc.Close()
+			var out strings.Builder
+			sc := bufio.NewScanner(rc)
+			for sc.Scan() {
+				line := sc.Text()
+				if len(line) > 8 {
+					line = line[8:]
+				}
+				out.WriteString(line + "\n")
+			}
+			logs := out.String()
+			if strings.TrimSpace(logs) != "" {
+				_ = h.masterClient.PushLogs(lCtx, containerID, containerName, logs)
+			}
+		}(cid, name)
 
 	case "oom":
-		log.Printf("[HealthReporter] OOM kill: %s", name)
-		_ = h.masterClient.PushEvent(ctx, "oom", name, "OOM kill — memory limit exceeded")
+		log.Printf("[HealthReporter] OOM kill: %s (id=%s)", name, cid)
+		if h.streamer != nil {
+			h.streamer.Push("oom", name, cid, "OOM kill — memory limit exceeded", 137)
+		} else {
+			_ = h.masterClient.PushEvent(ctx, "oom", name, cid, 137, "OOM kill — memory limit exceeded")
+		}
 
 	case "start":
-		_ = h.masterClient.PushEvent(ctx, "start", name, "")
+		if h.streamer != nil {
+			h.streamer.Push("start", name, cid, "", 0)
+		} else {
+			_ = h.masterClient.PushEvent(ctx, "start", name, cid, 0, "")
+		}
 
 	case "stop", "kill":
-		_ = h.masterClient.PushEvent(ctx, msg.Action, name, "")
+		if h.streamer != nil {
+			h.streamer.Push(action, name, cid, "", 0)
+		} else {
+			_ = h.masterClient.PushEvent(ctx, action, name, cid, 0, "")
+		}
 	}
 }
 
-// pollStats samples every container's CPU+mem every 30s and pushes to master.
 func (h *HealthReporter) pollStats(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -126,11 +183,15 @@ func (h *HealthReporter) checkAllStats(ctx context.Context) {
 			continue
 		}
 		allStats = append(allStats, s)
-
 		if s.MemPct > h.memThresholdPct {
-			detail := fmt.Sprintf("Memory %.1f%% — %.0f/%.0f MB", s.MemPct, s.MemUsedMB, s.MemLimitMB)
+			detail := fmt.Sprintf("High memory usage: %.1f%% (%.0fMB / %.0fMB) exceeds %.0f%% threshold",
+				s.MemPct, s.MemUsedMB, s.MemLimitMB, h.memThresholdPct)
 			log.Printf("[HealthReporter] HIGH MEM: %s — %s", name, detail)
-			_ = h.masterClient.PushEvent(ctx, "health_fail", name, detail)
+			if h.streamer != nil {
+				h.streamer.Push("health_fail", name, c.ID, detail, 0)
+			} else {
+				_ = h.masterClient.PushEvent(ctx, "health_fail", name, c.ID, 0, detail)
+			}
 		}
 	}
 
@@ -161,18 +222,21 @@ func (h *HealthReporter) sampleStats(ctx context.Context, id, name string) (Cont
 	}
 
 	cpuDelta := float64(raw.CPUStats.CPUUsage.TotalUsage) - float64(raw.PreCPUStats.CPUUsage.TotalUsage)
-	sysDelta  := float64(raw.CPUStats.SystemUsage)         - float64(raw.PreCPUStats.SystemUsage)
+	sysDelta := float64(raw.CPUStats.SystemUsage) - float64(raw.PreCPUStats.SystemUsage)
 	ncpu := float64(raw.CPUStats.OnlineCPUs)
-	if ncpu == 0 { ncpu = 1 }
+	if ncpu == 0 {
+		ncpu = 1
+	}
 	cpuPct := 0.0
 	if sysDelta > 0 {
 		cpuPct = (cpuDelta / sysDelta) * ncpu * 100.0
 	}
-	memUsed  := float64(raw.MemoryStats.Usage) / 1024 / 1024
+	memUsed := float64(raw.MemoryStats.Usage) / 1024 / 1024
 	memLimit := float64(raw.MemoryStats.Limit) / 1024 / 1024
 	memPct := 0.0
-	if memLimit > 0 { memPct = (memUsed / memLimit) * 100.0 }
-
+	if memLimit > 0 {
+		memPct = (memUsed / memLimit) * 100.0
+	}
 	return ContainerStats{
 		Name:       name,
 		CPUPct:     r2(cpuPct),
@@ -186,10 +250,23 @@ func r2(f float64) float64 { return float64(int(f*100)) / 100 }
 
 func exitCodeDetail(code int) string {
 	switch code {
-	case 0:   return "clean exit (0)"
-	case 1:   return "application error (1)"
-	case 137: return "OOM kill (137)"
-	case 143: return "SIGTERM (143)"
-	default:  return fmt.Sprintf("exit code %d", code)
+	case 0:
+		return "clean exit (0)"
+	case 1:
+		return "application error (1)"
+	case 2:
+		return "misuse of shell builtins or config error (2)"
+	case 126:
+		return "command invoked cannot execute (126)"
+	case 127:
+		return "command not found (127)"
+	case 137:
+		return "OOM kill or SIGKILL (137)"
+	case 139:
+		return "segmentation fault / SIGSEGV (139)"
+	case 143:
+		return "SIGTERM graceful termination (143)"
+	default:
+		return fmt.Sprintf("exit code %d", code)
 	}
 }

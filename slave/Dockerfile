@@ -1,14 +1,17 @@
 # Stage 1 — build
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
-# Install build deps (git required for go mod tidy to fetch modules)
+# Install build deps
 RUN apk add --no-cache git ca-certificates
 
-# Copy go.mod first — let tidy resolve exact versions and generate go.sum
+# Copy everything so go mod tidy can see all imports
 COPY go.mod .
 COPY *.go .
+
+# Generate go.sum and download all dependencies
+ENV GONOSUMDB=* GOFLAGS=-mod=mod
 RUN go mod tidy && go mod download
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o dockermind-slave .

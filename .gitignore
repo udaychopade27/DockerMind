@@ -1,2 +1,13 @@
 .env
-
+__pycache__/
+*.py[cod]
+*.class
+*.db
+*.sqlite3
+data/*.db
+data/*.sqlite3
+dashboard/node_modules/
+dashboard/dist/
+.vscode/
+.idea/
+*.log

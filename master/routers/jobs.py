@@ -1,8 +1,11 @@
+import asyncio
 import time
-from fastapi import APIRouter, HTTPException, Depends, Query, Header
-from pydantic import BaseModel
 from typing import Optional
-from config import API_SECRET
+
+from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel
+
+from middleware.auth import get_current_user, require_role
 from services.scheduler import scheduler
 from services.job_dispatcher import job_dispatcher
 from database import get_db, audit
@@ -10,22 +13,20 @@ from database import get_db, audit
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
-def verify(x_api_key: str = Header(...)):
-    if x_api_key != API_SECRET:
-        raise HTTPException(401, "Invalid API key")
-
-
 class CreateJobRequest(BaseModel):
     name: str
-    type: str                    # restart | stop | start | exec | log_check
+    type: str              # restart | stop | start | exec | log_check
     slave_id: str = "local"
     container: str = ""
     payload: dict = {}
-    run_at: Optional[float] = None   # unix timestamp; None = run now
+    run_at: Optional[float] = None   # unix timestamp; None = run immediately
 
 
-@router.post("")
-async def create_job(req: CreateJobRequest, _=Depends(verify)):
+@router.post("", summary="Schedule a job (operator+)")
+async def create_job(
+    req: CreateJobRequest,
+    user: dict = Depends(require_role("operator")),
+):
     job_id = await scheduler.schedule(
         name=req.name,
         job_type=req.type,
@@ -34,51 +35,33 @@ async def create_job(req: CreateJobRequest, _=Depends(verify)):
         payload=req.payload,
         run_at=req.run_at,
     )
-    # If run_at is now or past — dispatch immediately
     if not req.run_at or req.run_at <= time.time():
         job = await scheduler.get_job(job_id)
         if job:
-            import asyncio
             asyncio.create_task(job_dispatcher.execute_job(job))
 
-    await audit("job_created", target=job_id,
-                slave_id=req.slave_id, container=req.container)
+    await audit("job_created", target=job_id, slave_id=req.slave_id,
+                container=req.container, user=user.get("sub"))
     return {"job_id": job_id, "status": "queued"}
 
 
-@router.get("")
+@router.get("", summary="List jobs (viewer+)")
 async def list_jobs(
     status: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
-    _=Depends(verify),
+    user: dict = Depends(get_current_user),
 ):
     jobs = await scheduler.list_jobs(status=status, limit=limit)
     return {"jobs": jobs, "count": len(jobs)}
 
 
-@router.get("/{job_id}")
-async def get_job(job_id: str, _=Depends(verify)):
-    job = await scheduler.get_job(job_id)
-    if not job:
-        raise HTTPException(404, f"Job '{job_id}' not found")
-    return job
-
-
-@router.delete("/{job_id}")
-async def cancel_job(job_id: str, _=Depends(verify)):
-    ok = await scheduler.cancel_job(job_id)
-    if not ok:
-        raise HTTPException(400, "Job not found or already running/done")
-    return {"status": "cancelled", "job_id": job_id}
-
-
-@router.get("/audit/log")
+@router.get("/audit/log", summary="View audit log (viewer+)")
 async def audit_log(
     limit: int = Query(50, le=200),
     container: Optional[str] = Query(None),
-    _=Depends(verify),
+    user: dict = Depends(require_role("viewer")),
 ):
-    async with await get_db() as db:
+    async with get_db() as db:
         if container:
             async with db.execute(
                 "SELECT * FROM audit_log WHERE container=? ORDER BY ts DESC LIMIT ?",
@@ -91,3 +74,22 @@ async def audit_log(
             ) as cur:
                 rows = await cur.fetchall()
     return {"audit_log": [dict(r) for r in rows]}
+
+
+@router.get("/{job_id}", summary="Get job details (viewer+)")
+async def get_job(job_id: str, user: dict = Depends(get_current_user)):
+    job = await scheduler.get_job(job_id)
+    if not job:
+        raise HTTPException(404, f"Job '{job_id}' not found")
+    return job
+
+
+@router.delete("/{job_id}", summary="Cancel a pending job (operator+)")
+async def cancel_job(
+    job_id: str,
+    user: dict = Depends(require_role("operator")),
+):
+    ok = await scheduler.cancel_job(job_id)
+    if not ok:
+        raise HTTPException(400, "Job not found or already running/completed")
+    return {"status": "cancelled", "job_id": job_id}

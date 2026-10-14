@@ -173,12 +173,14 @@ func (mc *MasterClient) PushLogs(ctx context.Context, containerID, containerName
 	return err
 }
 
-// PushEvent sends a container lifecycle event (start/stop/die/oom) to master.
-func (mc *MasterClient) PushEvent(ctx context.Context, eventType, containerName, detail string) error {
+// PushEvent sends a container lifecycle event (start/stop/die/oom/health_fail) to master with exit code and container ID.
+func (mc *MasterClient) PushEvent(ctx context.Context, eventType, containerName, containerID string, exitCode int, detail string) error {
 	_, err := mc.post(ctx, "/slaves/events", map[string]any{
 		"slave_id":       mc.slaveID,
 		"event_type":     eventType,
 		"container_name": containerName,
+		"container_id":   containerID,
+		"exit_code":      exitCode,
 		"detail":         detail,
 		"ts":             time.Now().Unix(),
 	})
@@ -208,8 +210,11 @@ func (mc *MasterClient) RunHeartbeatLoop(ctx context.Context, watcher *DockerWat
 			if err != nil {
 				consecutiveFails++
 				log.Printf("[MasterClient] Heartbeat failed (%d consecutive): %v", consecutiveFails, err)
-				if consecutiveFails >= 3 {
-					log.Println("[MasterClient] Master appears unreachable — will keep retrying")
+				hostname, _ := os.Hostname()
+				outboundIP := getOutboundIP()
+				if regErr := mc.Register(ctx, hostname, outboundIP, 8080, []string{"phase2"}); regErr == nil {
+					log.Printf("[MasterClient] Re-registered with master after heartbeat failure")
+					consecutiveFails = 0
 				}
 			} else {
 				if consecutiveFails > 0 {

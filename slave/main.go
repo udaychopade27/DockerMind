@@ -78,7 +78,7 @@ func main() {
 	// Health reporter (stats polling + event detection)
 	var reporter *HealthReporter
 	if watcher != nil {
-		reporter = NewHealthReporter(watcher.cli, masterClient, cfg)
+		reporter = NewHealthReporter(watcher.cli, masterClient, cfg, streamer)
 	}
 
 	// Local HTTP server (receives commands from master)

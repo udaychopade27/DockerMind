@@ -1,88 +1,218 @@
 import os
-import time
-from fastapi import Request, HTTPException
+from datetime import datetime, timedelta
+from typing import Optional
+
+from fastapi import HTTPException, Depends, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-# Role config — set via env vars or extend for DB-backed RBAC in Phase 4
-# Format: "key1:role1,key2:role2"
-# Roles: admin (full access) | operator (read + heal) | viewer (read only)
+# ── Config ────────────────────────────────────────────────────────────────────
 
-def _load_keys() -> dict:
-    """Load API keys from env. Falls back to single API_SECRET as admin."""
-    keys = {}
-    raw = os.getenv("API_KEYS", "")
+JWT_SECRET       = os.getenv("JWT_SECRET", "my-super-secure-jwt-key-32chars")
+JWT_ALGORITHM    = "HS256"
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+ROLE_RANK = {"viewer": 0, "operator": 1, "admin": 2}
+
+pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def safe_password(password: str) -> str:
+    """
+    bcrypt only supports first 72 bytes.
+    """
+    return password.encode("utf-8")[:72].decode(
+    "utf-8",
+    errors="ignore",
+    )
+
+# ── User store ────────────────────────────────────────────────────────────────
+# Loaded from env var USERS="username:plaintext_password:role,..."
+# Passwords are bcrypt-hashed at load time so they're never compared as plaintext
+# in hot paths.
+# Fallback: admin user with password = API_SECRET value.
+
+def _load_users() -> dict:
+    users = {}
+
+    raw = os.getenv("USERS", "")
+
     if raw:
         for entry in raw.split(","):
-            parts = entry.strip().split(":")
-            if len(parts) == 2:
-                keys[parts[0].strip()] = parts[1].strip()
-    # Always add the main secret as admin
-    secret = os.getenv("API_SECRET", "change-this-secret-in-production")
-    if secret:
-        keys[secret] = "admin"
-    return keys
+            parts = [p.strip() for p in entry.split(":")]
+
+            if len(parts) == 3:
+                username, password, role = parts
+
+                if role not in ROLE_RANK:
+                    role = "viewer"
+
+                users[username] = {
+                    "hashed_password": pwd_ctx.hash(
+                        safe_password(password)
+                    ),
+                    "role": role,
+                }
+
+    if "admin" not in users:
+        users["admin"] = {
+            "hashed_password": pwd_ctx.hash(
+                safe_password(ADMIN_PASSWORD)
+            ),
+            "role": "admin",
+        }
+
+    return users
 
 
-API_KEYS: dict = _load_keys()
-
-# Routes and the minimum role required to access them
-ROUTE_ROLES = {
-    "POST /heal":              "operator",
-    "POST /containers":        "operator",
-    "POST /jobs":              "operator",
-    "POST /runbooks":          "admin",
-    "DELETE /slaves":          "admin",
-    "GET /jobs/audit/log":     "admin",
-}
+USERS: dict = _load_users()
 
 
-def get_role(api_key: str) -> str | None:
-    return API_KEYS.get(api_key)
+# ── JWT helpers ───────────────────────────────────────────────────────────────
+
+def create_token(username: str, role: str) -> dict:
+    expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS)
+    payload = {
+        "sub":  username,
+        "role": role,
+        "exp":  expire,
+        "iat":  datetime.utcnow(),
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return {
+        "access_token": token,
+        "token_type":   "bearer",
+        "expires_in":   JWT_EXPIRE_HOURS * 3600,
+        "role":         role,
+        "username":     username,
+    }
 
 
-def role_rank(role: str) -> int:
-    return {"viewer": 0, "operator": 1, "admin": 2}.get(role, -1)
+def decode_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if not payload.get("sub"):
+            raise HTTPException(401, "Invalid token: missing subject")
+        return payload
+    except JWTError as e:
+        raise HTTPException(401, f"Token invalid or expired: {e}")
 
 
-class RBACMiddleware(BaseHTTPMiddleware):
+def authenticate_user(
+    username: str,
+    password: str,
+):
+    user = USERS.get(username)
+
+    if not user:
+        return None
+
+    if not pwd_ctx.verify(
+        safe_password(password),
+        user["hashed_password"],
+    ):
+        return None
+
+    return {
+        "username": username,
+        "role": user["role"],
+    }
+
+
+# ── FastAPI dependencies ──────────────────────────────────────────────────────
+# These are used directly in route functions as Depends(...)
+
+# HTTPBearer reads "Authorization: Bearer <token>" — shows lock icon in Swagger
+_bearer = HTTPBearer(auto_error=False)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> dict:
     """
-    Lightweight RBAC middleware.
-    - /health and /slaves/register + /slaves/heartbeat are public (slave agents need these)
-    - /ws WebSocket is public (dashboard connects before auth)
-    - Everything else requires X-Api-Key header
+    Dependency: validates Bearer JWT, returns {"sub": "alice", "role": "admin"}.
+    Use in any route:  user = Depends(get_current_user)
     """
+    if not credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated. Click 'Authorize' in Swagger and enter your Bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return decode_token(credentials.credentials)
 
-    PUBLIC_PATHS = {"/health", "/slaves/register", "/slaves/heartbeat",
-                    "/slaves/logs", "/slaves/events", "/slaves/stats", "/ws"}
+
+def require_role(minimum_role: str):
+    """
+    Dependency factory enforcing a minimum RBAC role.
+    Use:  user = Depends(require_role("operator"))
+    """
+    def _check(user: dict = Depends(get_current_user)) -> dict:
+        user_rank    = ROLE_RANK.get(user.get("role", ""), -1)
+        required_rank = ROLE_RANK.get(minimum_role, 99)
+        if user_rank < required_rank:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your role '{user.get('role')}' cannot perform this action. "
+                       f"Required: '{minimum_role}' or higher.",
+            )
+        return user
+    return _check
+
+
+# Convenience aliases so routes read naturally
+require_viewer   = Depends(require_role("viewer"))
+require_operator = Depends(require_role("operator"))
+require_admin    = Depends(require_role("admin"))
+
+
+# ── Global JWT middleware ─────────────────────────────────────────────────────
+# Blocks all non-public routes before they even hit the router.
+# Routes use Depends(require_role(...)) for fine-grained RBAC on top of this.
+
+class JWTMiddleware(BaseHTTPMiddleware):
+
+    # Slave agents + Swagger UI + login bypass token check entirely
+    PUBLIC_PREFIXES = (
+        "/health",
+        "/auth/",
+        "/slaves/register",
+        "/slaves/heartbeat",
+        "/slaves/logs",
+        "/slaves/events",
+        "/slaves/stats",
+        "/ws",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+    )
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        # Allow public paths
-        if any(path.startswith(p) for p in self.PUBLIC_PATHS):
+        if request.method == "OPTIONS" or any(path.startswith(p) for p in self.PUBLIC_PREFIXES):
             return await call_next(request)
 
-        api_key = request.headers.get("X-Api-Key", "")
-        role = get_role(api_key)
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "Not authenticated. Use 'Authorize' in Swagger UI or pass "
+                              "'Authorization: Bearer <token>' header."
+                },
+            )
 
-        if not role:
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        try:
+            payload = jwt.decode(auth[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            request.state.user = payload.get("sub", "unknown")
+            request.state.role = payload.get("role", "viewer")
+        except JWTError as e:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": f"Token invalid or expired: {e}"},
+            )
 
-        # Check route-specific role requirements
-        route_key = f"{request.method} {path.rstrip('/')}"
-        for pattern, required_role in ROUTE_ROLES.items():
-            method, route_path = pattern.split(" ", 1)
-            if request.method == method and path.startswith(route_path):
-                if role_rank(role) < role_rank(required_role):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Role '{role}' cannot access this endpoint (requires '{required_role}')"
-                    )
-                break
-
-        # Attach role to request state for downstream use
-        request.state.role = role
-        request.state.api_key = api_key
-
-        response = await call_next(request)
-        return response
+        return await call_next(request)

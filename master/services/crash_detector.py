@@ -22,6 +22,19 @@ class CrashDetector:
 
     async def record_die(self, slave_id: str, container_name: str, exit_code: int) -> dict:
         """Record a container death. Returns analysis dict."""
+        if container_name.startswith("dockermind-"):
+            return {
+                "container": container_name,
+                "slave_id": slave_id,
+                "exit_code": exit_code,
+                "restarts_in_window": 0,
+                "is_crash_loop": False,
+                "is_oom": False,
+                "window_secs": self.CRASH_LOOP_WINDOW,
+                "severity": "info",
+                "root_cause": "Internal DockerMind component",
+                "heal_action": "none",
+            }
         key = (slave_id, container_name)
         now = time.time()
 
@@ -74,23 +87,28 @@ class CrashDetector:
         return self._oom_counts.get((slave_id, container_name), 0)
 
     def reset(self, slave_id: str, container_name: str):
-        """Call when container is intentionally stopped/restarted by the agent."""
-        key = (slave_id, container_name)
-        self._events.pop(key, None)
+        """Call when container is intentionally stopped/restarted by the agent or recovered."""
+        for s in (slave_id, "local", "slave-local"):
+            self._events.pop((s, container_name), None)
+            self._oom_counts.pop((s, container_name), None)
 
     def summary(self) -> list:
-        """Return containers with active crash patterns."""
+        """Return containers with active crash loops (>= 2 crashes in 5m or active OOM)."""
         result = []
         now = time.time()
-        for (slave_id, name), events in self._events.items():
+        for (slave_id, name), events in list(self._events.items()):
+            if name.startswith("dockermind-"):
+                continue
             recent = [(ts, ec) for ts, ec in events if now - ts <= self.CRASH_LOOP_WINDOW]
-            if recent:
+            oom_c = self._oom_counts.get((slave_id, name), 0)
+            # Only classify as active incident if container crashed multiple times (>= 2) or has active OOM
+            if len(recent) >= 2 or oom_c > 0:
                 result.append({
                     "slave_id": slave_id,
                     "container": name,
                     "restarts_in_window": len(recent),
                     "is_crash_loop": len(recent) >= self.CRASH_LOOP_THRESHOLD,
-                    "oom_count": self._oom_counts.get((slave_id, name), 0),
+                    "oom_count": oom_c,
                 })
         return result
 

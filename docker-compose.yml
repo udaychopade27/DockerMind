@@ -11,8 +11,11 @@ volumes:
 
 services:
 
-  # ── Ollama ──────────────────────────────────────────────────────────────────
+  # ── Ollama ─────────────────────────────────────────────────────────────────
+  # Only started when you use:  docker compose --profile local up
+  # Skipped entirely for online/gemini/openrouter mode — saves ~2GB RAM + pull time
   ollama:
+    profiles: [local]
     image: ollama/ollama:latest
     container_name: dockermind-ollama
     restart: unless-stopped
@@ -28,14 +31,15 @@ services:
       - OLLAMA_MAX_QUEUE=4
     mem_limit: 2g
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD","ollama","list"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 90s
 
-  # ── Model pull (runs once) ───────────────────────────────────────────────────
+  # ── Model pull (runs once, local profile only) ──────────────────────────────
   ollama-pull:
+    profiles: [local]
     image: ollama/ollama:latest
     container_name: dockermind-model-pull
     restart: "no"
@@ -65,27 +69,42 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./master:/app
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./master/certs:/app/certs:ro
       - master_data:/app/data
     environment:
+      # ─ LLM provider ─
+      - LLM_PROVIDER=${LLM_PROVIDER:-online}
+      # Gemini (primary online)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      # OpenRouter (fallback)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-google/gemma-4-26b-a4b-it:free}
+      # Ollama (used only when LLM_PROVIDER=local)
       - OLLAMA_BASE_URL=http://ollama:11434
-      - LLM_MODEL=qwen2.5-coder:1.5b
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5-coder:1.5b}
       - LLM_TIMEOUT=180
       - LLM_NUM_CTX=2048
       - LLM_NUM_PREDICT=256
+      # ─ Master ─
       - MASTER_HOST=0.0.0.0
       - MASTER_PORT=8000
       - API_SECRET=${API_SECRET:-dockermind-dev-secret}
       - SLAVE_TIMEOUT_SECS=30
       - DB_PATH=/app/data/dockermind.db
+      # ─ Auth & Users ─
+      - JWT_SECRET=${JWT_SECRET:-my-super-secure-jwt-key-32chars}
+      - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-24}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - USERS=${USERS:-}
       # Optional — set in .env to enable notifications
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - NOTIFY_MIN_SEVERITY=${NOTIFY_MIN_SEVERITY:-error}
-    depends_on:
-      ollama:
-        condition: service_healthy
+    # No depends_on ollama here — master starts independently in online mode.
+    # The local profile (--profile local) brings ollama up alongside master automatically.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
@@ -114,3 +133,17 @@ services:
     depends_on:
       master:
         condition: service_healthy
+  # ── Dashboard UI (React + Vite) ──────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: dockermind-dashboard
+    restart: unless-stopped
+    networks: [dockermind]
+    ports:
+      - "3000:80"
+    depends_on:
+      master:
+        condition: service_healthy
+

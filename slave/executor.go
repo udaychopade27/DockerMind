@@ -12,6 +12,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
 
@@ -153,6 +154,8 @@ func (e *Executor) Execute(req CommandRequest) CommandResponse {
 		return e.start(ctx, cli, req.Container)
 	case "stop":
 		return e.stop(ctx, cli, req.Container)
+	case "pull_restart":
+		return e.pullRestart(ctx, cli, req.Container)
 	case "logs":
 		tail := req.Tail
 		if tail == 0 {
@@ -261,5 +264,34 @@ func (e *Executor) exec(ctx context.Context, cli *client.Client, name, command s
 	return CommandResponse{
 		Success: inspect.ExitCode == 0,
 		Output:  string(out),
+	}
+}
+func (e *Executor) pullRestart(ctx context.Context, cli *client.Client, name string) CommandResponse {
+	timeout := 10
+	_ = cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
+
+	inspect, err := cli.ContainerInspect(ctx, name)
+	if err != nil {
+		return CommandResponse{Success: false, Error: fmt.Sprintf("inspect container %s: %v", name, err)}
+	}
+
+	imageName := inspect.Config.Image
+	if imageName != "" {
+		rc, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+		if err == nil {
+			_, _ = io.Copy(io.Discard, rc)
+			_ = rc.Close()
+		} else {
+			log.Printf("[Executor] Warning: Image pull failed for %s (%s): %v — restarting existing image", name, imageName, err)
+		}
+	}
+
+	if err := cli.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
+		return CommandResponse{Success: false, Error: fmt.Sprintf("start container %s: %v", name, err)}
+	}
+
+	return CommandResponse{
+		Success: true,
+		Output:  fmt.Sprintf("Container %s pulled fresh image (%s) and restarted successfully", name, imageName),
 	}
 }

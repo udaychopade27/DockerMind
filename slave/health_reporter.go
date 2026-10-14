@@ -231,7 +231,19 @@ func (h *HealthReporter) sampleStats(ctx context.Context, id, name string) (Cont
 	if sysDelta > 0 {
 		cpuPct = (cpuDelta / sysDelta) * ncpu * 100.0
 	}
-	memUsed := float64(raw.MemoryStats.Usage) / 1024 / 1024
+	usage := raw.MemoryStats.Usage
+	// Linux cgroup memory accounting includes inactive page cache in Usage.
+	// In cgroups v2, inactive cache is in Stats["inactive_file"].
+	// In cgroups v1, it is in Stats["total_inactive_file"].
+	// Subtracting this gives the actual RSS/active memory, matching docker stats.
+	if raw.MemoryStats.Stats != nil {
+		if inactive, ok := raw.MemoryStats.Stats["inactive_file"]; ok && inactive > 0 && usage > inactive {
+			usage -= inactive
+		} else if totalInactive, ok := raw.MemoryStats.Stats["total_inactive_file"]; ok && totalInactive > 0 && usage > totalInactive {
+			usage -= totalInactive
+		}
+	}
+	memUsed := float64(usage) / 1024 / 1024
 	memLimit := float64(raw.MemoryStats.Limit) / 1024 / 1024
 	memPct := 0.0
 	if memLimit > 0 {

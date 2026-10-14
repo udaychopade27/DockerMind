@@ -197,7 +197,8 @@ async def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 
 @app.get("/containers", tags=["containers"], summary="List containers on master host (viewer+)")
 async def list_containers(user: dict = Depends(get_current_user)):
-    return {"containers": docker_ops.list_containers(all_containers=True), "host": "master"}
+    containers = await asyncio.to_thread(docker_ops.list_containers, all_containers=True, include_stats=False)
+    return {"containers": containers, "host": "master"}
 
 
 @app.get("/containers/{name}/logs", tags=["containers"], summary="Get container logs (viewer+)")
@@ -278,17 +279,18 @@ async def receive_stats(req: StatsRequest):
 async def websocket_endpoint(ws: WebSocket):
     await ws_manager.connect(ws)
     try:
+        containers = await asyncio.to_thread(docker_ops.list_containers, all_containers=True, include_stats=False)
         await ws.send_json({
             "event":      "init",
             "slaves":     registry.all(),
-            "containers": docker_ops.list_containers(all_containers=True),
+            "containers": containers,
             "ts":         time.time(),
         })
         while True:
             data = await ws.receive_text()
             if data == "ping":
                 await ws.send_json({"event": "pong", "ts": time.time()})
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, Exception):
         ws_manager.disconnect(ws)
 
 

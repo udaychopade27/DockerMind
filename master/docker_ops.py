@@ -8,30 +8,31 @@ def get_client():
     return docker.DockerClient(base_url=DOCKER_SOCKET)
 
 
-def list_containers(all_containers: bool = False) -> List[Dict]:
-    """Return list of containers on THIS host (master's own docker)."""
+def list_containers(all_containers: bool = False, include_stats: bool = False) -> List[Dict]:
+    """Return list of containers on THIS host (master's own docker). Fast non-blocking by default."""
     client = get_client()
     containers = client.containers.list(all=all_containers)
     result = []
     for c in containers:
         stats = {}
-        try:
-            raw = c.stats(stream=False)
-            cpu_delta = raw["cpu_stats"]["cpu_usage"]["total_usage"] - \
-                        raw["precpu_stats"]["cpu_usage"]["total_usage"]
-            sys_delta  = raw["cpu_stats"]["system_cpu_usage"] - \
-                         raw["precpu_stats"]["system_cpu_usage"]
-            cpu_pct = (cpu_delta / sys_delta) * 100.0 if sys_delta > 0 else 0
-            mem_used = raw["memory_stats"].get("usage", 0)
-            mem_limit = raw["memory_stats"].get("limit", 1)
-            stats = {
-                "cpu_pct": round(cpu_pct, 2),
-                "mem_used_mb": round(mem_used / 1024 / 1024, 1),
-                "mem_limit_mb": round(mem_limit / 1024 / 1024, 1),
-                "mem_pct": round((mem_used / mem_limit) * 100, 1),
-            }
-        except Exception:
-            pass
+        if include_stats:
+            try:
+                raw = c.stats(stream=False)
+                cpu_delta = raw["cpu_stats"]["cpu_usage"]["total_usage"] - \
+                            raw["precpu_stats"]["cpu_usage"]["total_usage"]
+                sys_delta  = raw["cpu_stats"]["system_cpu_usage"] - \
+                             raw["precpu_stats"]["system_cpu_usage"]
+                cpu_pct = (cpu_delta / sys_delta) * 100.0 if sys_delta > 0 else 0
+                mem_used = raw["memory_stats"].get("usage", 0)
+                mem_limit = raw["memory_stats"].get("limit", 1)
+                stats = {
+                    "cpu_pct": round(cpu_pct, 2),
+                    "mem_used_mb": round(mem_used / 1024 / 1024, 1),
+                    "mem_limit_mb": round(mem_limit / 1024 / 1024, 1),
+                    "mem_pct": round((mem_used / mem_limit) * 100, 1),
+                }
+            except Exception:
+                pass
 
         result.append({
             "id": c.short_id,

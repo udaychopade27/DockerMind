@@ -174,8 +174,8 @@ class HealEngine:
             if inspect:
                 image = inspect.get("Config", {}).get("Image")
                 try:
-                    import docker
-                    docker.DockerClient().images.pull(image)
+                    client = docker_ops.get_client()
+                    client.images.pull(image)
                 except Exception as e:
                     return {"success": False, "message": f"Pull failed: {e}"}
             docker_ops.start_container(container_name)

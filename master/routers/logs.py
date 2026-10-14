@@ -25,7 +25,8 @@ async def analyze_logs(
     logs = docker_ops.get_logs(container_name, tail=tail)
     analysis = await llm_client.analyze_logs(container_name, logs)
     return {
-        "container":  container_name,
-        "analysis":   analysis,
-        "log_lines":  logs.count("\n"),
+        "container":   container_name,
+        "analysis":    analysis,
+        "log_lines":   logs.count("\n"),
+        "log_snippet": logs[-1200:] if logs else "No logs found for this container.",
     }

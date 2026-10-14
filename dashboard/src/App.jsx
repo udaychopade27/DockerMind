@@ -236,6 +236,15 @@ export default function App() {
   const [execResult, setExecResult] = useState(null);
   const [executing, setExecuting] = useState(false);
 
+  // AI Diagnosis & Remediation Modal State
+  const [healModalOpen, setHealModalOpen] = useState(false);
+  const [healTargetContainer, setHealTargetContainer] = useState('');
+  const [healTargetSlave, setHealTargetSlave] = useState('local');
+  const [healLoading, setHealLoading] = useState(false);
+  const [healDiagnosis, setHealDiagnosis] = useState(null);
+  const [healLogSnippet, setHealLogSnippet] = useState('');
+  const [healExecuting, setHealExecuting] = useState(false);
+
   // Chat State
   const [chatMessages, setChatMessages] = useState([
     { role: 'assistant', text: 'Hello! I am your DockerMind AI DevOps assistant. Ask me to diagnose crashing containers, explain OOM kills, or generate remediation runbooks.' }
@@ -348,6 +357,62 @@ export default function App() {
       addToast('error', 'Analysis Failed', String(err));
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  // Open Interactive AI Diagnosis Modal
+  const openHealModal = async (containerName, slaveId = 'local') => {
+    setHealTargetContainer(containerName);
+    setHealTargetSlave(slaveId);
+    setHealDiagnosis(null);
+    setHealLogSnippet('');
+    setHealLoading(true);
+    setHealModalOpen(true);
+    try {
+      const res = await apiFetch(`/logs/${encodeURIComponent(containerName)}/analyze?tail=100`);
+      if (res?.analysis) {
+        setHealDiagnosis(res.analysis);
+        setHealLogSnippet(res.log_snippet || '');
+      } else {
+        setHealDiagnosis({
+          severity: 'warn',
+          root_cause: 'Could not parse diagnosis from AI',
+          fix: 'Inspect container logs manually',
+          auto_heal: false,
+          heal_action: 'none',
+        });
+      }
+    } catch (err) {
+      setHealDiagnosis({
+        severity: 'error',
+        root_cause: `Failed to contact AI diagnostic service: ${err.message}`,
+        fix: 'Ensure master service is running and LLM is reachable',
+        auto_heal: false,
+        heal_action: 'none',
+      });
+    } finally {
+      setHealLoading(false);
+    }
+  };
+
+  const handleExecuteHealAction = async (action) => {
+    setHealExecuting(true);
+    await triggerAutoHeal(healTargetContainer, healTargetSlave, action);
+    setHealExecuting(false);
+    setHealModalOpen(false);
+  };
+
+  const handleForceRestartFromModal = async () => {
+    setHealExecuting(true);
+    try {
+      await apiFetch(`/containers/${healTargetContainer}/restart`, { method: 'POST' });
+      addToast('ok', 'Container Restarted', `Successfully restarted ${healTargetContainer}`);
+      refreshAll();
+    } catch (err) {
+      addToast('error', 'Restart Failed', String(err));
+    } finally {
+      setHealExecuting(false);
+      setHealModalOpen(false);
     }
   };
 
@@ -801,8 +866,8 @@ export default function App() {
                                 {isOperator && (
                                   <button
                                     className="btn btn-ai btn-sm"
-                                    title="Auto-Heal Container"
-                                    onClick={() => triggerAutoHeal(c.name)}
+                                    title="Diagnose & Heal Container with AI"
+                                    onClick={() => openHealModal(c.name, 'local')}
                                   >
                                     <Zap size={12} /> Heal
                                   </button>
@@ -958,9 +1023,10 @@ export default function App() {
                               </button>
                               <button
                                 className="btn btn-ai btn-sm"
-                                onClick={() => triggerAutoHeal(cl.container, cl.slave_id)}
+                                title="Diagnose & Heal Incident with AI"
+                                onClick={() => openHealModal(cl.container, cl.slave_id)}
                               >
-                                <Zap size={12} /> Auto-Heal with Backoff
+                                <Zap size={12} /> AI Diagnosis & Heal
                               </button>
                             </>
                           ) : (
@@ -1406,6 +1472,133 @@ export default function App() {
               <div className="terminal-window" style={{ height: '160px' }}>
                 <div className="terminal-body font-mono text-xs">
                   {execResult.output || execResult.error || 'No output.'}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── AI Diagnosis & Remediation Modal ── */}
+      {healModalOpen && (
+        <div className="modal-overlay" onClick={() => !healExecuting && setHealModalOpen(false)}>
+          <div className="modal-content card-glass" style={{ maxWidth: '640px', width: '92%' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <h3 className="text-base font-semibold flex items-center gap-2">
+                <Zap size={18} className="text-violet" /> AI Diagnosis & Remediation
+              </h3>
+              <button className="btn btn-secondary btn-sm" disabled={healExecuting} onClick={() => setHealModalOpen(false)}>✕</button>
+            </div>
+
+            <div className="mb-3 p-2 rounded" style={{ background: 'rgba(15,23,42,0.7)', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <span className="text-xs text-muted">Target Container: </span>
+                <span className="font-mono text-cyan font-bold">{healTargetContainer}</span>
+              </div>
+              <div>
+                <span className="text-xs text-muted">Node: </span>
+                <span className="font-mono text-xs">{healTargetSlave}</span>
+              </div>
+            </div>
+
+            {healLoading ? (
+              <div style={{ textAlign: 'center', padding: '2.5rem 1rem' }}>
+                <Sparkles size={32} className="animate-spin text-violet mb-3" style={{ margin: '0 auto' }} />
+                <div className="text-sm font-semibold text-slate-200 mb-1">DockerMind AI Analyzing Container Logs...</div>
+                <div className="text-xs text-muted">Evaluating exit codes, error signatures, memory thresholds, and backoff history.</div>
+              </div>
+            ) : (
+              <div>
+                {/* Status Badges */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
+                  <div className="p-2 rounded" style={{ background: 'rgba(30,41,59,0.5)', border: '1px solid #334155', textAlign: 'center' }}>
+                    <div className="text-xs text-muted mb-1">Severity</div>
+                    <span className={`badge ${
+                      healDiagnosis?.severity === 'ok' ? 'badge-ok' :
+                      healDiagnosis?.severity === 'critical' ? 'badge-crit' : 'badge-warn'
+                    }`}>
+                      {(healDiagnosis?.severity || 'WARN').toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded" style={{ background: 'rgba(30,41,59,0.5)', border: '1px solid #334155', textAlign: 'center' }}>
+                    <div className="text-xs text-muted mb-1">AI Recommendation</div>
+                    <span className="font-mono text-xs text-violet font-semibold">
+                      {healDiagnosis?.heal_action || 'none'}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded" style={{ background: 'rgba(30,41,59,0.5)', border: '1px solid #334155', textAlign: 'center' }}>
+                    <div className="text-xs text-muted mb-1">Safe to Auto-Heal</div>
+                    <span className={`badge ${healDiagnosis?.auto_heal ? 'badge-ok' : 'badge-warn'}`}>
+                      {healDiagnosis?.auto_heal ? 'YES' : 'MANUAL REVIEW'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Root Cause Card */}
+                <div className="p-3 rounded mb-3" style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid #334155' }}>
+                  <div className="text-xs text-muted mb-1 font-semibold flex items-center gap-1">
+                    <Activity size={13} className="text-cyan" /> ROOT CAUSE DIAGNOSIS
+                  </div>
+                  <div className="text-sm text-slate-200" style={{ lineHeight: 1.5 }}>
+                    {healDiagnosis?.root_cause || 'No active crash or error found in container logs.'}
+                  </div>
+                </div>
+
+                {/* Fix Card */}
+                <div className="p-3 rounded mb-3" style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid #334155' }}>
+                  <div className="text-xs text-muted mb-1 font-semibold flex items-center gap-1">
+                    <CheckCircle2 size={13} className="text-emerald" /> RECOMMENDED RESOLUTION
+                  </div>
+                  <div className="text-sm text-slate-200" style={{ lineHeight: 1.5 }}>
+                    {healDiagnosis?.fix || 'Inspect application configuration.'}
+                  </div>
+                </div>
+
+                {/* Analyzed Logs Snippet Accordion */}
+                {healLogSnippet && (
+                  <details style={{ marginBottom: '1.25rem', background: '#0b1120', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid #1e293b' }}>
+                    <summary className="text-xs font-mono text-muted cursor-pointer hover:text-cyan">
+                      View Recent Analyzed Logs Tail
+                    </summary>
+                    <pre className="mt-2 text-xs font-mono text-slate-300" style={{ maxHeight: '120px', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                      {healLogSnippet}
+                    </pre>
+                  </details>
+                )}
+
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '1.25rem', flexWrap: 'wrap' }}>
+                  <button className="btn btn-secondary btn-sm" disabled={healExecuting} onClick={() => setHealModalOpen(false)}>
+                    Close
+                  </button>
+
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled={healExecuting}
+                    onClick={handleForceRestartFromModal}
+                    title="Bypass AI recommendation and restart container directly"
+                  >
+                    <RefreshCw size={13} /> Force Restart Container
+                  </button>
+
+                  {healDiagnosis?.heal_action && healDiagnosis.heal_action !== 'none' ? (
+                    <button
+                      className="btn btn-ai btn-sm"
+                      disabled={healExecuting}
+                      onClick={() => handleExecuteHealAction(healDiagnosis.heal_action)}
+                    >
+                      <Zap size={13} /> {healExecuting ? 'Executing...' : `Apply AI Fix (${healDiagnosis.heal_action})`}
+                    </button>
+                  ) : (
+                    <button
+                      className="btn btn-ai btn-sm"
+                      style={{ opacity: 0.85 }}
+                      onClick={() => handleExecuteHealAction('restart')}
+                      disabled={healExecuting}
+                    >
+                      <Zap size={13} /> {healExecuting ? 'Executing...' : 'Trigger AI Auto-Heal (Restart)'}
+                    </button>
+                  )}
                 </div>
               </div>
             )}

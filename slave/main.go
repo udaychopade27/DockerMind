@@ -16,6 +16,7 @@ type Config struct {
 	SlaveID       string
 	MasterURL     string
 	SlavePort     int
+	SlaveSecret   string
 	CACert        string
 	SlaveCert     string
 	SlaveKey      string
@@ -28,6 +29,7 @@ func loadConfig() Config {
 		SlaveID:       getEnv("SLAVE_ID", generateSlaveID()),
 		MasterURL:     getEnv("MASTER_URL", "http://master:8000"),
 		SlavePort:     8080,
+		SlaveSecret:   getEnv("SLAVE_SECRET", getEnv("API_SECRET", "dockermind-dev-secret")),
 		CACert:        getEnv("CA_CERT", "/app/certs/ca.crt"),
 		SlaveCert:     getEnv("SLAVE_CERT", "/app/certs/slave.crt"),
 		SlaveKey:      getEnv("SLAVE_KEY", "/app/certs/slave.key"),
@@ -73,7 +75,7 @@ func main() {
 	}
 
 	// Event streamer (immediate event delivery with retry)
-	streamer := NewEventStreamer(masterClient.httpClient, cfg.MasterURL, cfg.SlaveID)
+	streamer := NewEventStreamer(masterClient.httpClient, cfg.MasterURL, cfg.SlaveID, cfg.SlaveSecret)
 
 	// Health reporter (stats polling + event detection)
 	var reporter *HealthReporter

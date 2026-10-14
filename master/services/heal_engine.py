@@ -7,6 +7,7 @@ import llm_client
 from models.alerts import alert_store
 from services.crash_detector import crash_detector
 from slave_registry import registry
+from config import API_SECRET
 from services.notifier import notifier
 
 
@@ -198,7 +199,7 @@ class HealEngine:
             "container": container_name,
             "command": action[5:] if action.startswith("exec:") else "",
         }
-        headers = {"X-Slave-Token": slave_id}
+        headers = {"X-Slave-Token": API_SECRET}
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

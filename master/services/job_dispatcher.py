@@ -5,6 +5,7 @@ from typing import List, Union, Optional
 import httpx
 from database import get_db, audit
 from slave_registry import registry
+from config import API_SECRET
 import docker_ops
 
 
@@ -58,7 +59,7 @@ class JobDispatcher:
 
         url = f"http://{node.ip}:{node.port}/command"
         body = {"action": job_type, "container": container, **payload}
-        headers = {"X-Slave-Token": slave_id}
+        headers = {"X-Slave-Token": API_SECRET}
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=body, headers=headers)

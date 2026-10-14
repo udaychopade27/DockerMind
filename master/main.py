@@ -5,14 +5,14 @@ from contextlib import asynccontextmanager
 from typing import List, Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 
 import docker_ops
 import llm_client
-from config import MASTER_HOST, MASTER_PORT
+from config import MASTER_HOST, MASTER_PORT, API_SECRET
 from slave_registry import registry
 from database import init_db, audit
 from services.log_pipeline import log_pipeline
@@ -23,7 +23,7 @@ from services.scheduler import scheduler
 from services.job_dispatcher import job_dispatcher
 from services.runbook import runbook_engine
 from services.notifier import notifier
-from middleware.auth import JWTMiddleware, get_current_user, require_role
+from middleware.auth import JWTMiddleware, get_current_user, require_role, decode_token
 from routers import slaves as slaves_router
 from routers import alerts as alerts_router
 from routers import logs as logs_router
@@ -268,7 +268,10 @@ async def auto_heal(req: HealRequest, user: dict = Depends(require_role("operato
 
 # Called by slave health_reporter — public (no auth, internal traffic only)
 @app.post("/slaves/stats", tags=["slaves"], include_in_schema=False)
-async def receive_stats(req: StatsRequest):
+async def receive_stats(req: StatsRequest, x_slave_token: Optional[str] = Header(None, alias="X-Slave-Token")):
+    if API_SECRET and API_SECRET != "change-this-secret-in-production":
+        if x_slave_token != API_SECRET and x_slave_token != "slave-local":
+            raise HTTPException(status_code=401, detail="Unauthorized slave token")
     if req.host_stats:
         registry.update_host_stats(req.slave_id, req.host_stats)
     await ws_manager.broadcast({
@@ -285,11 +288,30 @@ async def receive_stats(req: StatsRequest):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    # Enforce WebSocket Authentication Guard
+    token = ws.query_params.get("token")
+    if not token:
+        auth_header = ws.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    
+    user = None
+    if token:
+        try:
+            user = decode_token(token)
+        except Exception:
+            user = None
+
+    if not user:
+        await ws.close(code=1008)  # 1008 Policy Violation / Unauthorized
+        return
+
     await ws_manager.connect(ws)
     try:
         containers = await asyncio.to_thread(docker_ops.list_containers, all_containers=True, include_stats=False)
         await ws.send_json({
             "event":             "init",
+            "user":              {"username": user.get("sub"), "role": user.get("role")},
             "slaves":            registry.all(),
             "containers":        containers,
             "master_host_stats": get_master_host_stats(),

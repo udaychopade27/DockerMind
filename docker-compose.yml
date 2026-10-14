@@ -130,6 +130,7 @@ services:
       - MASTER_URL=http://master:8000
       - SLAVE_PORT=8080
       - DOCKER_SOCKET=/var/run/docker.sock
+      - SLAVE_SECRET=${API_SECRET:-dockermind-dev-secret}
     depends_on:
       master:
         condition: service_healthy

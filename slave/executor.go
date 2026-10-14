@@ -72,7 +72,7 @@ func startLocalServer(cfg Config, executor *Executor) {
 
 		// Validate shared secret sent by master in header
 		token := r.Header.Get("X-Slave-Token")
-		if token != cfg.SlaveID {
+		if token != cfg.SlaveSecret && token != cfg.SlaveID {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -89,6 +89,12 @@ func startLocalServer(cfg Config, executor *Executor) {
 	})
 
 	mux.HandleFunc("/containers", func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("X-Slave-Token")
+		if token != cfg.SlaveSecret && token != cfg.SlaveID {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		cli, err := executor.dockerClient()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

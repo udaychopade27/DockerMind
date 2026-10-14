@@ -594,20 +594,28 @@ export default function App() {
     }
   };
 
-  // WebSocket Live Stream Connection
+  // WebSocket Live Stream Connection with Token Auth & Reconnection Guard
   useEffect(() => {
     if (!token) return;
     let ws = null;
     let pingInterval = null;
+    let reconnectTimer = null;
+    let isCancelled = false;
 
     const connectWS = () => {
+      if (isCancelled) return;
       try {
-        ws = new WebSocket(WS_URL);
+        const url = `${WS_URL}?token=${encodeURIComponent(token)}`;
+        ws = new WebSocket(url);
 
         ws.onopen = () => {
+          if (isCancelled) {
+            if (ws) ws.close();
+            return;
+          }
           setWsConnected(true);
           pingInterval = setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
               ws.send('ping');
               setLastPing(new Date().toLocaleTimeString());
             }
@@ -615,6 +623,7 @@ export default function App() {
         };
 
         ws.onmessage = (event) => {
+          if (isCancelled) return;
           try {
             const data = JSON.parse(event.data);
             if (data.event === 'init') {
@@ -651,10 +660,17 @@ export default function App() {
           }
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           setWsConnected(false);
-          clearInterval(pingInterval);
-          setTimeout(connectWS, 4000);
+          if (pingInterval) clearInterval(pingInterval);
+          // If connection was rejected due to authentication (code 1008), do not retry indefinitely
+          if (event && event.code === 1008) {
+            console.warn('[DockerMind WS] Connection closed by policy violation (1008): Unauthorized or expired token');
+            return;
+          }
+          if (!isCancelled && token) {
+            reconnectTimer = setTimeout(connectWS, 4000);
+          }
         };
 
         ws.onerror = () => {
@@ -662,14 +678,22 @@ export default function App() {
         };
       } catch (err) {
         setWsConnected(false);
+        if (!isCancelled && token) {
+          reconnectTimer = setTimeout(connectWS, 4000);
+        }
       }
     };
 
     connectWS();
 
     return () => {
-      if (ws) ws.close();
-      clearInterval(pingInterval);
+      isCancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (pingInterval) clearInterval(pingInterval);
+      if (ws) {
+        ws.onclose = null; // Detach listener so closing during unmount does not trigger reconnect
+        ws.close();
+      }
     };
   }, [token]);
 

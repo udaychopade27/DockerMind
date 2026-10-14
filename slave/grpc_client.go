@@ -19,9 +19,10 @@ import (
 // Phase 2 will upgrade this to full gRPC streaming.
 
 type MasterClient struct {
-	baseURL    string
-	slaveID    string
-	httpClient *http.Client
+	baseURL     string
+	slaveID     string
+	slaveSecret string
+	httpClient  *http.Client
 }
 
 // NewMasterClient creates a mTLS-secured client pointing at the master.
@@ -31,9 +32,10 @@ func NewMasterClient(cfg Config) (*MasterClient, error) {
 		return nil, fmt.Errorf("cannot build mTLS client: %w", err)
 	}
 	return &MasterClient{
-		baseURL:    cfg.MasterURL,
-		slaveID:    cfg.SlaveID,
-		httpClient: httpClient,
+		baseURL:     cfg.MasterURL,
+		slaveID:     cfg.SlaveID,
+		slaveSecret: cfg.SlaveSecret,
+		httpClient:  httpClient,
 	}, nil
 }
 
@@ -107,6 +109,9 @@ func (mc *MasterClient) post(ctx context.Context, path string, payload any) ([]b
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if mc.slaveSecret != "" {
+		req.Header.Set("X-Slave-Token", mc.slaveSecret)
+	}
 
 	resp, err := mc.httpClient.Do(req)
 	if err != nil {
@@ -239,6 +244,9 @@ func (mc *MasterClient) postRaw(ctx context.Context, path string, body []byte) e
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if mc.slaveSecret != "" {
+		req.Header.Set("X-Slave-Token", mc.slaveSecret)
+	}
 	resp, err := mc.httpClient.Do(req)
 	if err != nil {
 		return err

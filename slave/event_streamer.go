@@ -23,18 +23,20 @@ type Event struct {
 }
 
 type EventStreamer struct {
-	queue      chan Event
-	httpClient *http.Client
-	masterURL  string
-	slaveID    string
+	queue       chan Event
+	httpClient  *http.Client
+	masterURL   string
+	slaveID     string
+	slaveSecret string
 }
 
-func NewEventStreamer(httpClient *http.Client, masterURL, slaveID string) *EventStreamer {
+func NewEventStreamer(httpClient *http.Client, masterURL, slaveID, slaveSecret string) *EventStreamer {
 	return &EventStreamer{
-		queue:      make(chan Event, 100),
-		httpClient: httpClient,
-		masterURL:  masterURL,
-		slaveID:    slaveID,
+		queue:       make(chan Event, 100),
+		httpClient:  httpClient,
+		masterURL:   masterURL,
+		slaveID:     slaveID,
+		slaveSecret: slaveSecret,
 	}
 }
 
@@ -81,6 +83,9 @@ func (es *EventStreamer) sendWithRetry(ctx context.Context, ev Event) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if es.slaveSecret != "" {
+			req.Header.Set("X-Slave-Token", es.slaveSecret)
+		}
 
 		resp, err := es.httpClient.Do(req)
 		cancel()

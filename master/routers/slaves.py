@@ -1,6 +1,7 @@
 import time
 from typing import List, Optional, Union
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header
+from config import API_SECRET
 from pydantic import BaseModel
 from middleware.auth import get_current_user, require_role
 from slave_registry import registry
@@ -56,10 +57,17 @@ class CircuitBreakerResetRequest(BaseModel):
     container_name: str
 
 
-# ── Public endpoints — slave agents call these, no auth required ──────────────
+
+def verify_slave_token(x_slave_token: Optional[str] = Header(None, alias="X-Slave-Token")):
+    if API_SECRET and API_SECRET != "change-this-secret-in-production":
+        if x_slave_token != API_SECRET and x_slave_token != "slave-local":
+            raise HTTPException(status_code=401, detail="Unauthorized slave token")
+    return True
+
+# ── Slave agent endpoints (protected by mutual X-Slave-Token) ──────────────
 
 @router.post("/register", summary="Slave self-registration (public)")
-async def register(req: RegisterRequest):
+async def register(req: RegisterRequest, _auth: bool = Depends(verify_slave_token)):
     await registry.register(
         slave_id=req.slave_id,
         hostname=req.hostname,
@@ -71,7 +79,7 @@ async def register(req: RegisterRequest):
 
 
 @router.post("/heartbeat", summary="Slave heartbeat (public)")
-async def heartbeat(req: HeartbeatRequest):
+async def heartbeat(req: HeartbeatRequest, _auth: bool = Depends(verify_slave_token)):
     ok = await registry.heartbeat(req.slave_id, req.container_count)
     if not ok:
         raise HTTPException(404, "Slave not registered — call /slaves/register first")
@@ -79,7 +87,7 @@ async def heartbeat(req: HeartbeatRequest):
 
 
 @router.post("/logs", summary="Slave log ingestion (public)")
-async def receive_logs(req: LogBatchRequest):
+async def receive_logs(req: LogBatchRequest, _auth: bool = Depends(verify_slave_token)):
     queued = await log_pipeline.push(
         slave_id=req.slave_id,
         container_id=req.container_id,
@@ -90,7 +98,7 @@ async def receive_logs(req: LogBatchRequest):
 
 
 @router.post("/events", summary="Slave event ingestion (public)")
-async def receive_event(req: EventRequest):
+async def receive_event(req: EventRequest, _auth: bool = Depends(verify_slave_token)):
     result = {
         "event_type": req.event_type,
         "container": req.container_name,

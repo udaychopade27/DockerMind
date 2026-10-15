@@ -30,6 +30,10 @@ from routers import logs as logs_router
 from routers import jobs as jobs_router
 from routers import runbooks as runbooks_router
 from routers import auth as auth_router
+from middleware.redact_filter import install_global_redactor, get_redacted_logging_config
+
+# Install sensitive token redaction across all loggers
+install_global_redactor()
 
 
 # ── WebSocket manager ─────────────────────────────────────────────────────────
@@ -38,8 +42,11 @@ class ConnectionManager:
     def __init__(self):
         self.active: List[WebSocket] = []
 
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
+    async def connect(self, ws: WebSocket, subprotocol: Optional[str] = None):
+        if subprotocol:
+            await ws.accept(subprotocol=subprotocol)
+        else:
+            await ws.accept()
         self.active.append(ws)
 
     def disconnect(self, ws: WebSocket):
@@ -85,6 +92,7 @@ async def slave_monitor():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    install_global_redactor()
     print("=== DockerMind Master v0.3.0 starting ===")
     await init_db()
     await alert_store.load_from_db()
@@ -314,8 +322,22 @@ async def get_container_metrics_route(container_name: str, limit: int = 40, user
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    # Enforce WebSocket Authentication Guard
+    # Enforce WebSocket Authentication Guard (supports query param, Sec-WebSocket-Protocol, or Authorization header)
     token = ws.query_params.get("token")
+    accepted_subprotocol = None
+
+    if not token:
+        # Check Sec-WebSocket-Protocol subprotocol
+        raw_proto = ws.headers.get("sec-websocket-protocol", "")
+        if raw_proto:
+            subprotocols = [s.strip() for s in raw_proto.split(",") if s.strip()]
+            if len(subprotocols) >= 2 and subprotocols[0].lower() in ("bearer", "token", "access_token"):
+                token = subprotocols[1]
+                accepted_subprotocol = subprotocols[0]
+            elif len(subprotocols) == 1 and (subprotocols[0].startswith("eyJ") or len(subprotocols[0]) > 20):
+                token = subprotocols[0]
+                accepted_subprotocol = "bearer"
+
     if not token:
         auth_header = ws.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
@@ -332,7 +354,7 @@ async def websocket_endpoint(ws: WebSocket):
         await ws.close(code=1008)  # 1008 Policy Violation / Unauthorized
         return
 
-    await ws_manager.connect(ws)
+    await ws_manager.connect(ws, subprotocol=accepted_subprotocol)
     try:
         containers = await asyncio.to_thread(docker_ops.list_containers, all_containers=True, include_stats=False)
         await ws.send_json({
@@ -352,4 +374,5 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host=MASTER_HOST, port=MASTER_PORT, reload=False, log_level="info")
+    uvicorn_log_config = get_redacted_logging_config()
+    uvicorn.run("main:app", host=MASTER_HOST, port=MASTER_PORT, reload=False, log_level="info", log_config=uvicorn_log_config)

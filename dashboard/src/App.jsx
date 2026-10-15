@@ -945,8 +945,12 @@ export default function App() {
     const connectWS = () => {
       if (isCancelled) return;
       try {
-        const url = `${WS_URL}?token=${encodeURIComponent(token)}`;
-        ws = new WebSocket(url);
+        // Authenticate via Sec-WebSocket-Protocol header so JWT token is not exposed in the URL
+        try {
+          ws = new WebSocket(WS_URL, ['bearer', token]);
+        } catch {
+          ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token)}`);
+        }
 
         ws.onopen = () => {
           if (isCancelled) {

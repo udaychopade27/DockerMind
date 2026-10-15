@@ -8,6 +8,14 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+from database import (
+    db_get_user,
+    db_list_users,
+    db_create_user,
+    db_update_user,
+    db_delete_user,
+    db_seed_initial_users
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -68,6 +76,44 @@ def _load_users() -> dict:
 
 
 USERS: dict = _load_users()
+
+async def sync_users_from_db():
+    """
+    Seeds initial users into SQLite on startup and synchronizes
+    the in-memory USERS cache with persistent DB records.
+    """
+    global USERS
+    try:
+        raw_env_users = os.getenv("USERS", "")
+        await db_seed_initial_users(
+            default_admin_password=ADMIN_PASSWORD,
+            env_users_str=raw_env_users,
+            pwd_hasher_fn=lambda p: pwd_ctx.hash(safe_password(p))
+        )
+        db_users = await db_list_users()
+        new_users = {}
+        for u in db_users:
+            full = await db_get_user(u["username"])
+            if full:
+                new_users[full["username"]] = {
+                    "hashed_password": full["password_hash"],
+                    "role": full["role"],
+                    "created_at": full.get("created_at"),
+                    "updated_at": full.get("updated_at")
+                }
+        if "admin" not in new_users:
+            new_users["admin"] = {
+                "hashed_password": pwd_ctx.hash(safe_password(ADMIN_PASSWORD)),
+                "role": "admin",
+                "created_at": time.time(),
+                "updated_at": time.time()
+            }
+        USERS = new_users
+        print(f"[Auth] Successfully synced {len(USERS)} user accounts from persistent database.")
+    except Exception as e:
+        print(f"[Auth] Warning: Could not sync users from DB ({e}); falling back to env-based user store.")
+
+
 
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────

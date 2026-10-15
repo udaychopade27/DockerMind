@@ -26,7 +26,11 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
-  Lock
+  Lock,
+  Users,
+  UserPlus,
+  Trash2,
+  Edit3
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -536,6 +540,138 @@ export default function App() {
   });
   const [webhookSaving, setWebhookSaving] = useState(false);
   const [webhookTesting, setWebhookTesting] = useState(false);
+
+  // User Directory & RBAC State (Phase 4)
+  const [userList, setUserList] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [showCreateUserModal, setShowCreateUserModal] = useState(false);
+  const [showEditUserModal, setShowEditUserModal] = useState(false);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [newUsername, setNewUsername] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('operator');
+  const [editUserRole, setEditUserRole] = useState('operator');
+  const [editUserPassword, setEditUserPassword] = useState('');
+  const [userActionError, setUserActionError] = useState('');
+
+  const fetchUsers = async () => {
+    if (!token && !localStorage.getItem('dockermind_token')) return;
+    setUsersLoading(true);
+    try {
+      const data = await apiFetch('/auth/users');
+      if (data && data.users) {
+        setUserList(data.users);
+      }
+    } catch (err) {
+      console.error('Failed to fetch users:', err);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setUserActionError('');
+    if (!newUsername.trim() || newUsername.trim().length < 3) {
+      setUserActionError('Username must be at least 3 characters.');
+      return;
+    }
+    if (!newUserPassword || newUserPassword.length < 6) {
+      setUserActionError('Password must be at least 6 characters.');
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/auth/users`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        },
+        body: JSON.stringify({
+          username: newUsername.trim(),
+          password: newUserPassword,
+          role: newUserRole
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setUserActionError(data.detail || 'Failed to create user.');
+        return;
+      }
+      setShowCreateUserModal(false);
+      setNewUsername('');
+      setNewUserPassword('');
+      setNewUserRole('operator');
+      addToast('ok', 'User Created', `Account '${data.username}' created with '${data.role}' role.`);
+      fetchUsers();
+    } catch (err) {
+      setUserActionError('Connection failed.');
+    }
+  };
+
+  const handleUpdateUser = async (e) => {
+    e.preventDefault();
+    if (!selectedUser) return;
+    setUserActionError('');
+    const payload = { role: editUserRole };
+    if (editUserPassword.trim()) {
+      if (editUserPassword.trim().length < 6) {
+        setUserActionError('New password must be at least 6 characters.');
+        return;
+      }
+      payload.password = editUserPassword.trim();
+    }
+    try {
+      const res = await fetch(`${API_BASE}/auth/users/${selectedUser.username}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setUserActionError(data.detail || 'Failed to update user.');
+        return;
+      }
+      setShowEditUserModal(false);
+      setSelectedUser(null);
+      setEditUserPassword('');
+      addToast('ok', 'User Updated', `Updated access permissions for '${selectedUser.username}'.`);
+      fetchUsers();
+    } catch (err) {
+      setUserActionError('Connection failed.');
+    }
+  };
+
+  const handleDeleteUser = async (username) => {
+    if (!window.confirm(`Are you sure you want to delete account '${username}'?`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/auth/users/${username}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addToast('error', 'Delete Failed', data.detail || 'Could not delete user.');
+        return;
+      }
+      addToast('ok', 'User Deleted', `Account '${username}' has been removed.`);
+      fetchUsers();
+    } catch (err) {
+      addToast('error', 'Error', 'Failed to reach server.');
+    }
+  };
+
+  // Auto-fetch users when users tab selected
+  useEffect(() => {
+    if (activeTab === 'users' && currentUser?.role === 'admin') {
+      fetchUsers();
+    }
+  }, [activeTab, currentUser]);
 
   // Toast Notifications
   const [toasts, setToasts] = useState([]);
@@ -1115,6 +1251,12 @@ export default function App() {
             <Sparkles size={18} />
             <span>AI DevOps Assistant</span>
           </div>
+          {currentUser?.role === 'admin' && (
+            <div className={`nav-item ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}>
+              <Users size={18} />
+              <span>Users & RBAC</span>
+            </div>
+          )}
         </nav>
 
         <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border-subtle)', paddingTop: '1rem' }}>
@@ -2119,6 +2261,142 @@ export default function App() {
               </div>
             </div>
           )}
+          {/* ── TAB 7: USER MANAGEMENT & RBAC DIRECTORY ── */}
+          {activeTab === 'users' && currentUser?.role === 'admin' && (
+            <div>
+              <div className="card-glass mb-6">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                  <div>
+                    <h3 className="text-base font-semibold flex items-center gap-2">
+                      <Users size={18} className="text-cyan" /> User Directory & Role-Based Access Control (RBAC)
+                    </h3>
+                    <p className="text-xs text-muted mt-1">
+                      Manage cluster administrators, SRE operators, and read-only observers. Persisted in SQLite.
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button className="btn btn-secondary btn-sm flex items-center gap-1.5" onClick={fetchUsers} disabled={usersLoading}>
+                      <RefreshCw size={13} className={usersLoading ? 'animate-spin' : ''} /> Refresh
+                    </button>
+                    <button className="btn btn-primary btn-sm flex items-center gap-1.5" onClick={() => { setUserActionError(''); setShowCreateUserModal(true); }}>
+                      <UserPlus size={14} /> Add New User
+                    </button>
+                  </div>
+                </div>
+
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Username</th>
+                        <th>Assigned Role</th>
+                        <th>Access Scope</th>
+                        <th>Created</th>
+                        <th style={{ textAlign: 'right' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userList.map((u) => (
+                        <tr key={u.username}>
+                          <td className="font-mono text-sm font-semibold text-slate-200">
+                            {u.username}
+                            {u.username === currentUser?.username && (
+                              <span className="badge badge-cyan text-xs ml-2" style={{ fontSize: '0.65rem' }}>YOU</span>
+                            )}
+                          </td>
+                          <td>
+                            <span className={`badge ${u.role === 'admin' ? 'badge-cyan' : u.role === 'operator' ? 'badge-warn' : 'badge-ok'}`}>
+                              {u.role.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="text-xs text-muted">
+                            {u.role === 'admin' && 'Full Control, Shell Exec, User Management'}
+                            {u.role === 'operator' && 'Remediate, Restart Containers, Runbooks'}
+                            {u.role === 'viewer' && 'Read-Only Telemetry, Logs, Health Status'}
+                          </td>
+                          <td className="text-xs font-mono text-dim">
+                            {u.created_at ? new Date(u.created_at * 1000).toLocaleDateString() : '—'}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <div style={{ display: 'inline-flex', gap: '0.4rem' }}>
+                              <button
+                                className="btn btn-secondary btn-xs flex items-center gap-1"
+                                onClick={() => {
+                                  setSelectedUser(u);
+                                  setEditUserRole(u.role);
+                                  setEditUserPassword('');
+                                  setUserActionError('');
+                                  setShowEditUserModal(true);
+                                }}
+                              >
+                                <Edit3 size={12} /> Edit Role
+                              </button>
+                              {u.username !== 'admin' && u.username !== currentUser?.username && (
+                                <button
+                                  className="btn btn-secondary btn-xs flex items-center gap-1 hover:border-rose text-rose"
+                                  onClick={() => handleDeleteUser(u.username)}
+                                  title="Delete user"
+                                >
+                                  <Trash2 size={12} /> Delete
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* RBAC Privileges Matrix Card */}
+              <div className="card-glass">
+                <h4 className="text-sm font-semibold mb-2 flex items-center gap-2 text-cyan font-mono">
+                  <Shield size={15} /> RBAC PRIVILEGES MATRIX
+                </h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem', marginTop: '0.75rem' }}>
+                  <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid #334155' }}>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="badge badge-cyan">ADMIN</span>
+                      <span className="text-xs font-bold text-slate-200">Full System Governance</span>
+                    </div>
+                    <ul className="text-xs text-muted" style={{ paddingLeft: '1.25rem', lineHeight: '1.6' }}>
+                      <li>Manage users, roles, and password resets</li>
+                      <li>Execute arbitrary shell commands in containers</li>
+                      <li>Configure external alerting webhooks</li>
+                      <li>Execute and author automated runbooks</li>
+                    </ul>
+                  </div>
+
+                  <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid #334155' }}>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="badge badge-warn">OPERATOR</span>
+                      <span className="text-xs font-bold text-slate-200">Incident Remediation</span>
+                    </div>
+                    <ul className="text-xs text-muted" style={{ paddingLeft: '1.25rem', lineHeight: '1.6' }}>
+                      <li>Trigger AI automated healing & container restart</li>
+                      <li>Execute predefined runbooks & dispatch jobs</li>
+                      <li>Acknowledge and resolve incident alerts</li>
+                      <li>Cannot manage users or modify webhooks</li>
+                    </ul>
+                  </div>
+
+                  <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid #334155' }}>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="badge badge-ok">VIEWER</span>
+                      <span className="text-xs font-bold text-slate-200">Observability Observer</span>
+                    </div>
+                    <ul className="text-xs text-muted" style={{ paddingLeft: '1.25rem', lineHeight: '1.6' }}>
+                      <li>View real-time topology map & host stats</li>
+                      <li>Inspect container logs & sparkline metrics</li>
+                      <li>Ask DockerMind AI Copilot questions</li>
+                      <li>Read-only; zero mutation capabilities</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
       </div>
 
@@ -2347,6 +2625,138 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Create User Modal ── */}
+      {showCreateUserModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateUserModal(false)}>
+          <div className="modal-content card-glass" style={{ maxWidth: '440px', width: '90%' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <h3 className="text-base font-semibold flex items-center gap-2">
+                <UserPlus size={18} className="text-cyan" /> Add New User
+              </h3>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowCreateUserModal(false)}>✕</button>
+            </div>
+
+            {userActionError && (
+              <div className="login-error-banner font-mono mb-3" style={{ fontSize: '0.75rem' }}>
+                <AlertTriangle size={14} />
+                <span>{userActionError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleCreateUser} autoComplete="off">
+              <div className="mb-3">
+                <label className="text-xs text-muted block mb-1">Username</label>
+                <input
+                  type="text"
+                  className="input-field font-mono"
+                  placeholder="e.g. dev_sarah"
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  required
+                  autoComplete="off"
+                />
+              </div>
+
+              <div className="mb-3">
+                <label className="text-xs text-muted block mb-1">Initial Password (min 6 chars)</label>
+                <input
+                  type="password"
+                  className="input-field font-mono"
+                  placeholder="••••••••"
+                  value={newUserPassword}
+                  onChange={(e) => setNewUserPassword(e.target.value)}
+                  required
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div className="mb-4">
+                <label className="text-xs text-muted block mb-1">Assigned Role</label>
+                <select
+                  className="input-field font-mono"
+                  value={newUserRole}
+                  onChange={(e) => setNewUserRole(e.target.value)}
+                >
+                  <option value="viewer">viewer (Read-only Telemetry & Logs)</option>
+                  <option value="operator">operator (Remediate, Restart & Runbooks)</option>
+                  <option value="admin">admin (Full Governance, Exec & Users)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1.25rem' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowCreateUserModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  Create User
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit User Modal ── */}
+      {showEditUserModal && selectedUser && (
+        <div className="modal-overlay" onClick={() => setShowEditUserModal(false)}>
+          <div className="modal-content card-glass" style={{ maxWidth: '440px', width: '90%' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <h3 className="text-base font-semibold flex items-center gap-2">
+                <Edit3 size={18} className="text-cyan" /> Edit User: {selectedUser.username}
+              </h3>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowEditUserModal(false)}>✕</button>
+            </div>
+
+            {userActionError && (
+              <div className="login-error-banner font-mono mb-3" style={{ fontSize: '0.75rem' }}>
+                <AlertTriangle size={14} />
+                <span>{userActionError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleUpdateUser} autoComplete="off">
+              <div className="mb-3">
+                <label className="text-xs text-muted block mb-1">Account Role</label>
+                <select
+                  className="input-field font-mono"
+                  value={editUserRole}
+                  disabled={selectedUser.username === 'admin'}
+                  onChange={(e) => setEditUserRole(e.target.value)}
+                >
+                  <option value="viewer">viewer (Read-only Telemetry & Logs)</option>
+                  <option value="operator">operator (Remediate, Restart & Runbooks)</option>
+                  <option value="admin">admin (Full Governance, Exec & Users)</option>
+                </select>
+                {selectedUser.username === 'admin' && (
+                  <div className="text-xs text-dim mt-1">Primary root admin role cannot be changed.</div>
+                )}
+              </div>
+
+              <div className="mb-4">
+                <label className="text-xs text-muted block mb-1">Reset Password (leave empty to keep current)</label>
+                <input
+                  type="password"
+                  className="input-field font-mono"
+                  placeholder="New password (optional)"
+                  value={editUserPassword}
+                  onChange={(e) => setEditUserPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1.25rem' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowEditUserModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  Save Changes
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

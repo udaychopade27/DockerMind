@@ -23,7 +23,7 @@ from services.scheduler import scheduler
 from services.job_dispatcher import job_dispatcher
 from services.runbook import runbook_engine
 from services.notifier import notifier
-from middleware.auth import JWTMiddleware, get_current_user, require_role, decode_token
+from middleware.auth import JWTMiddleware, get_current_user, require_role, decode_token, sync_users_from_db
 from routers import slaves as slaves_router
 from routers import alerts as alerts_router
 from routers import logs as logs_router
@@ -95,6 +95,7 @@ async def lifespan(app: FastAPI):
     install_global_redactor()
     print("=== DockerMind Master v0.3.0 starting ===")
     await init_db()
+    await sync_users_from_db()
     await alert_store.load_from_db()
     await runbook_engine.seed_builtins()
     await notifier.load_settings()

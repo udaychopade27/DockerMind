@@ -109,6 +109,15 @@ async def init_db():
             updated_at REAL NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'viewer',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
         CREATE TABLE IF NOT EXISTS metrics_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             slave_id TEXT NOT NULL,
@@ -449,3 +458,120 @@ async def db_prune_old_metrics(retention_hours: int = 24):
             await db.commit()
     except Exception as e:
         print(f"[DB] Error pruning metrics: {e}")
+
+
+# ── User Directory & RBAC Persistence ─────────────────────────────────────────
+
+async def db_get_user(username: str) -> Optional[dict]:
+    try:
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT username, password_hash, role, created_at, updated_at FROM users WHERE username = ?",
+                (username,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return dict(row)
+                return None
+    except Exception as e:
+        print(f"[DB] Error fetching user '{username}': {e}")
+        return None
+
+
+async def db_list_users() -> list:
+    try:
+        async with get_db() as db:
+            async with db.execute(
+                "SELECT username, role, created_at, updated_at FROM users ORDER BY created_at ASC"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[DB] Error listing users: {e}")
+        return []
+
+
+async def db_create_user(username: str, password_hash: str, role: str) -> Optional[dict]:
+    now = time.time()
+    try:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (username, password_hash, role, now, now)
+            )
+            await db.commit()
+        return {"username": username, "role": role, "created_at": now, "updated_at": now}
+    except Exception as e:
+        print(f"[DB] Error creating user '{username}': {e}")
+        return None
+
+
+async def db_update_user(username: str, role: Optional[str] = None, password_hash: Optional[str] = None) -> Optional[dict]:
+    now = time.time()
+    try:
+        async with get_db() as db:
+            if role is not None and password_hash is not None:
+                await db.execute(
+                    "UPDATE users SET role = ?, password_hash = ?, updated_at = ? WHERE username = ?",
+                    (role, password_hash, now, username)
+                )
+            elif role is not None:
+                await db.execute(
+                    "UPDATE users SET role = ?, updated_at = ? WHERE username = ?",
+                    (role, now, username)
+                )
+            elif password_hash is not None:
+                await db.execute(
+                    "UPDATE users SET password_hash = ?, updated_at = ? WHERE username = ?",
+                    (password_hash, now, username)
+                )
+            else:
+                return None
+            await db.commit()
+        return await db_get_user(username)
+    except Exception as e:
+        print(f"[DB] Error updating user '{username}': {e}")
+        return None
+
+
+async def db_delete_user(username: str) -> bool:
+    try:
+        async with get_db() as db:
+            cursor = await db.execute("DELETE FROM users WHERE username = ?", (username,))
+            await db.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        print(f"[DB] Error deleting user '{username}': {e}")
+        return False
+
+
+async def db_seed_initial_users(default_admin_password: str, env_users_str: str, pwd_hasher_fn):
+    now = time.time()
+    try:
+        async with get_db() as db:
+            async with db.execute("SELECT COUNT(*) as cnt FROM users") as cursor:
+                row = await cursor.fetchone()
+                count = row["cnt"] if row else 0
+
+            if count == 0:
+                admin_hash = pwd_hasher_fn(default_admin_password)
+                await db.execute(
+                    "INSERT OR IGNORE INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    ("admin", admin_hash, "admin", now, now)
+                )
+                if env_users_str:
+                    for entry in env_users_str.split(","):
+                        parts = [p.strip() for p in entry.split(":")]
+                        if len(parts) == 3:
+                            u, p, r = parts
+                            if r not in ("admin", "operator", "viewer"):
+                                r = "viewer"
+                            h = pwd_hasher_fn(p)
+                            await db.execute(
+                                "INSERT OR IGNORE INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                                (u, h, r, now, now)
+                            )
+                await db.commit()
+                print("[DB] Initial users seeded successfully.")
+    except Exception as e:
+        print(f"[DB] Error seeding initial users: {e}")

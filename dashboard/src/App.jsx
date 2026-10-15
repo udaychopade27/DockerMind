@@ -29,6 +29,211 @@ import {
 const API_BASE = '/api';
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
+// ── Pure SVG Sparkline Component (Phase 4) ──────────────────────────────────
+function Sparkline({ data = [], color = 'var(--cyan-400)', height = 24, width = 100, strokeWidth = 1.75, unit = '' }) {
+  if (!data || data.length === 0) {
+    return (
+      <div style={{ height, width, display: 'flex', alignItems: 'center', opacity: 0.25 }}>
+        <span className="font-mono" style={{ fontSize: '0.65rem' }}>—</span>
+      </div>
+    );
+  }
+
+  const ptsData = data.length === 1 ? [data[0], data[0]] : data;
+  const min = Math.min(...ptsData);
+  const max = Math.max(...ptsData);
+  const diff = max - min === 0 ? 1 : max - min;
+  const pad = 2;
+  const usableW = width - pad * 2;
+  const usableH = height - pad * 2;
+
+  const coords = ptsData.map((val, i) => {
+    const x = pad + (i / (ptsData.length - 1)) * usableW;
+    const y = height - pad - ((val - min) / diff) * usableH;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  const pathLine = `M ${coords.join(' L ')}`;
+  const pathArea = `M ${coords[0].split(',')[0]},${height} L ${coords.join(' L ')} L ${coords[coords.length - 1].split(',')[0]},${height} Z`;
+  const lastCoord = coords[coords.length - 1].split(',');
+
+  return (
+    <div style={{ position: 'relative', width, height }} title={`Min: ${min.toFixed(1)}${unit} • Max: ${max.toFixed(1)}${unit} • Latest: ${ptsData[ptsData.length - 1].toFixed(1)}${unit}`}>
+      <svg width={width} height={height} style={{ overflow: 'visible' }}>
+        <defs>
+          <linearGradient id={`grad-${color.replace(/[^a-zA-Z0-9]/g, '')}`} x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor={color} stopOpacity="0.25" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.0" />
+          </linearGradient>
+        </defs>
+        <path d={pathArea} fill={`url(#grad-${color.replace(/[^a-zA-Z0-9]/g, '')})`} />
+        <path d={pathLine} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx={lastCoord[0]} cy={lastCoord[1]} r="2" fill={color} />
+      </svg>
+    </div>
+  );
+}
+
+// ── Interactive Cluster Topology Map (Phase 4) ──────────────────────────────
+function ClusterTopologyMap({ slaves = [], masterStats, selectedNodeFilter, onSelectNode, containers = [] }) {
+  const masterContainerCount = containers.filter(c => !c.slave_id || c.slave_id === 'local').length;
+
+  return (
+    <div className="card-glass mb-6" style={{ padding: '1.25rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+        <div>
+          <h3 className="text-base font-semibold flex items-center gap-2">
+            <Radio size={18} className="text-cyan" /> Interactive Cluster Topology Map (Phase 4)
+          </h3>
+          <div className="text-xs text-dim">
+            Real-time encrypted mTLS data bus architecture • Click any node to filter container fleet
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          {selectedNodeFilter && (
+            <button
+              className="btn btn-secondary btn-sm"
+              style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem', color: 'var(--cyan-400)' }}
+              onClick={() => onSelectNode(null)}
+            >
+              ✕ Filtered: {selectedNodeFilter} (Show All)
+            </button>
+          )}
+          <span className="badge badge-cyan" style={{ fontSize: '0.7rem' }}>
+            {1 + slaves.length} Active Nodes
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', position: 'relative', minHeight: '180px', padding: '1rem 0' }}>
+        {/* Master Controller Node */}
+        <div
+          className={`card-glass cursor-pointer ${selectedNodeFilter === 'local' ? 'border-cyan' : ''}`}
+          style={{
+            width: '260px',
+            padding: '1rem',
+            background: selectedNodeFilter === 'local' ? 'rgba(6, 182, 212, 0.12)' : 'rgba(15, 23, 42, 0.75)',
+            borderColor: selectedNodeFilter === 'local' ? 'var(--cyan-400)' : 'var(--emerald-400)',
+            borderLeft: '4px solid var(--emerald-400)',
+            transition: 'all 0.2s',
+            zIndex: 2,
+          }}
+          onClick={() => onSelectNode(selectedNodeFilter === 'local' ? null : 'local')}
+          title="Click to filter containers on Master host"
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+            <div>
+              <div className="font-bold text-sm text-emerald flex items-center gap-1.5">
+                <Server size={15} /> master (local)
+              </div>
+              <div className="font-mono text-xs text-dim">127.0.0.1:8000</div>
+            </div>
+            <span className="badge badge-ok" style={{ fontSize: '0.65rem' }}>CONTROLLER</span>
+          </div>
+          <div className="text-xs text-muted mb-2">Primary Orchestrator & AI Engine</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontFamily: 'monospace' }}>
+            <span className="text-dim">Containers:</span>
+            <span className="text-cyan font-bold">{masterContainerCount}</span>
+          </div>
+          {masterStats && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontFamily: 'monospace', marginTop: '0.25rem' }}>
+              <span className="text-dim">Host CPU:</span>
+              <span className="text-emerald">{masterStats.cpu_pct?.toFixed(1) || 0}%</span>
+            </div>
+          )}
+        </div>
+
+        {/* Central Data Bus Vector Line */}
+        <div style={{ flex: 1, height: '80px', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <svg style={{ position: 'absolute', width: '100%', height: '100%', overflow: 'visible' }}>
+            <defs>
+              <linearGradient id="bus-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="var(--emerald-400)" stopOpacity="0.8" />
+                <stop offset="50%" stopColor="var(--cyan-400)" stopOpacity="1" />
+                <stop offset="100%" stopColor="var(--violet-400)" stopOpacity="0.8" />
+              </linearGradient>
+            </defs>
+            <line
+              x1="0"
+              y1="40"
+              x2="100%"
+              y2="40"
+              stroke="url(#bus-grad)"
+              strokeWidth="2.5"
+              strokeDasharray="6,4"
+              style={{ animation: 'dash-stream 1.5s linear infinite' }}
+            />
+          </svg>
+          <div
+            className="badge badge-secondary"
+            style={{
+              zIndex: 3,
+              background: 'rgba(15, 23, 42, 0.9)',
+              border: '1px solid var(--cyan-400)',
+              color: 'var(--cyan-400)',
+              fontSize: '0.7rem',
+              boxShadow: '0 0 10px rgba(6,182,212,0.3)',
+              padding: '0.25rem 0.6rem',
+            }}
+          >
+            ⚡ mTLS Data Bus (Active Heartbeat)
+          </div>
+        </div>
+
+        {/* Slave Edge Nodes */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', zIndex: 2 }}>
+          {slaves.map((slave) => {
+            const isOnline = slave.is_online || slave.status === 'online';
+            const isSelected = selectedNodeFilter === slave.slave_id;
+            const slaveContainers = containers.filter(c => c.slave_id === slave.slave_id).length || slave.container_count || 0;
+
+            return (
+              <div
+                key={slave.slave_id}
+                className={`card-glass cursor-pointer ${isSelected ? 'border-cyan' : ''}`}
+                style={{
+                  width: '260px',
+                  padding: '1rem',
+                  background: isSelected ? 'rgba(6, 182, 212, 0.12)' : 'rgba(15, 23, 42, 0.75)',
+                  borderColor: isSelected ? 'var(--cyan-400)' : isOnline ? 'var(--cyan-400)' : 'var(--rose-400)',
+                  borderLeft: `4px solid ${isOnline ? 'var(--cyan-400)' : 'var(--rose-400)'}`,
+                  transition: 'all 0.2s',
+                }}
+                onClick={() => onSelectNode(isSelected ? null : slave.slave_id)}
+                title="Click to filter containers on this slave node"
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                  <div>
+                    <div className="font-bold text-sm text-cyan flex items-center gap-1.5">
+                      <Radio size={15} /> {slave.slave_id}
+                    </div>
+                    <div className="font-mono text-xs text-dim">{slave.ip || '172.28.0.2'}:{slave.port || 8080}</div>
+                  </div>
+                  <span className={`badge ${isOnline ? 'badge-ok' : 'badge-error'}`} style={{ fontSize: '0.65rem' }}>
+                    {isOnline ? 'ONLINE' : 'OFFLINE'}
+                  </span>
+                </div>
+                <div className="text-xs text-muted mb-2">Remote Edge Agent (Docker Worker)</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                  <span className="text-dim">Containers:</span>
+                  <span className="text-cyan font-bold">{slaveContainers}</span>
+                </div>
+                {slave.host_stats && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontFamily: 'monospace', marginTop: '0.25rem' }}>
+                    <span className="text-dim">Edge CPU:</span>
+                    <span className="text-cyan">{slave.host_stats.cpu_pct?.toFixed(1) || 0}%</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Login Screen Component ──────────────────────────────────────────────────
 function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState('admin');
@@ -277,6 +482,8 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [masterHostStats, setMasterHostStats] = useState(null);
+  const [metricsSummary, setMetricsSummary] = useState({ containers: {}, hosts: {} });
+  const [selectedNodeFilter, setSelectedNodeFilter] = useState(null);
 
   // Log & AI Diagnosis State
   const [selectedContainer, setSelectedContainer] = useState('dockermind-master');
@@ -390,7 +597,7 @@ export default function App() {
   // Initialize Data concurrently with Promise.all
   const refreshAll = async () => {
     try {
-      const [slavesData, containersData, alertsData, crashData, auditData, jobsData, meData, runbooksData] = await Promise.all([
+      const [slavesData, containersData, alertsData, crashData, auditData, jobsData, meData, runbooksData, metricsData] = await Promise.all([
         apiFetch('/slaves'),
         apiFetch('/containers'),
         apiFetch('/alerts'),
@@ -399,6 +606,7 @@ export default function App() {
         apiFetch('/jobs'),
         apiFetch('/auth/me'),
         apiFetch('/runbooks'),
+        apiFetch('/metrics/summary'),
       ]);
 
       if (slavesData?.slaves) setSlaves(slavesData.slaves);
@@ -409,6 +617,7 @@ export default function App() {
       if (auditData?.audit_log) setAuditLogs(auditData.audit_log);
       if (jobsData?.jobs) setJobs(jobsData.jobs);
       if (meData?.username) setCurrentUser(meData);
+      if (metricsData?.containers) setMetricsSummary(metricsData);
       if (runbooksData?.runbooks) {
         setRunbooks(runbooksData.runbooks);
         if (!selectedRunbookId && runbooksData.runbooks.length > 0) {
@@ -801,6 +1010,17 @@ export default function App() {
                   data.stats.forEach(s => { updated[s.name] = s; });
                   return updated;
                 });
+                setMetricsSummary(prev => {
+                  const nextContainers = { ...(prev.containers || {}) };
+                  data.stats.forEach(s => {
+                    const existing = nextContainers[s.name] || { cpu: [], mem: [], mem_pct: [], leak_risk: false, mem_trend_mb_hr: 0 };
+                    const newCpu = [...(existing.cpu || []).slice(-19), Number(s.cpu_pct.toFixed(1))];
+                    const newMem = [...(existing.mem || []).slice(-19), Number(s.mem_used_mb.toFixed(1))];
+                    const newMemPct = [...(existing.mem_pct || []).slice(-19), Number(s.mem_pct.toFixed(1))];
+                    nextContainers[s.name] = { ...existing, cpu: newCpu, mem: newMem, mem_pct: newMemPct };
+                  });
+                  return { ...prev, containers: nextContainers };
+                });
               }
               if (data.host_stats && data.slave_id) {
                 setSlaves(prev => prev.map(s => s.slave_id === data.slave_id ? { ...s, host_stats: data.host_stats } : s));
@@ -997,6 +1217,15 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Cluster Architecture & Topology Map (Phase 4) */}
+              <ClusterTopologyMap
+                slaves={slaves}
+                masterStats={masterHostStats}
+                selectedNodeFilter={selectedNodeFilter}
+                onSelectNode={setSelectedNodeFilter}
+                containers={containers}
+              />
+
               {/* Slaves Node Cards */}
               <div className="mb-6">
                 <h3 className="text-base font-semibold mb-3 flex items-center gap-2">
@@ -1063,44 +1292,64 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {containers.map((c) => {
-                        const stats = statsMap[c.name] || {};
-                        const cpu = stats.cpu_pct || 0;
-                        const memPct = stats.mem_pct || 0;
-                        const memUsed = stats.mem_used_mb || 0;
-                        const memLimit = stats.mem_limit_mb || 0;
-                        const isRunning = c.status === 'running' || c.status?.toLowerCase().includes('up');
+                      {containers
+                        .filter(c => {
+                          if (!selectedNodeFilter) return true;
+                          if (selectedNodeFilter === 'local') return !c.slave_id || c.slave_id === 'local';
+                          return c.slave_id === selectedNodeFilter;
+                        })
+                        .map((c) => {
+                          const stats = statsMap[c.name] || {};
+                          const cpu = stats.cpu_pct || 0;
+                          const memPct = stats.mem_pct || 0;
+                          const memUsed = stats.mem_used_mb || 0;
+                          const memLimit = stats.mem_limit_mb || 0;
+                          const isRunning = c.status === 'running' || c.status?.toLowerCase().includes('up');
+                          const cMetrics = metricsSummary?.containers?.[c.name] || {};
+                          const cpuHistory = cMetrics.cpu && cMetrics.cpu.length > 0 ? cMetrics.cpu : [cpu];
+                          const memHistory = cMetrics.mem_pct && cMetrics.mem_pct.length > 0 ? cMetrics.mem_pct : [memPct];
 
-                        return (
-                          <tr key={c.id || c.name}>
-                            <td>
-                              <div className="font-semibold font-mono text-cyan">{c.name}</div>
-                              <div className="text-xs text-dim font-mono">{c.id?.substring(0, 12)}</div>
-                            </td>
-                            <td className="font-mono text-xs text-muted">{c.image}</td>
-                            <td>
-                              <span className={`badge ${isRunning ? 'badge-ok' : 'badge-error'}`}>
-                                {c.status}
-                              </span>
-                            </td>
-                            <td style={{ width: '160px' }}>
-                              <div className="text-xs font-mono">{cpu.toFixed(1)}%</div>
-                              <div className="progress-bar-bg">
-                                <div className={`progress-bar-fill ${cpu > 80 ? 'fill-rose' : 'fill-emerald'}`} style={{ width: `${Math.min(100, cpu)}%` }} />
-                              </div>
-                            </td>
-                            <td style={{ width: '200px' }}>
-                              <div className="text-xs font-mono flex justify-between">
-                                <span>{memPct.toFixed(1)}%</span>
-                                <span className="text-dim">{memUsed > 0 ? `${memUsed.toFixed(0)}MB / ${memLimit.toFixed(0)}MB` : '—'}</span>
-                              </div>
-                              <div className="progress-bar-bg">
-                                <div
-                                  className={`progress-bar-fill ${memPct > 90 ? 'fill-rose' : memPct > 80 ? 'fill-amber' : 'fill-emerald'}`}
-                                  style={{ width: `${Math.min(100, memPct)}%` }}
-                                />
-                              </div>
-                            </td>
+                          return (
+                            <tr key={c.id || c.name}>
+                              <td>
+                                <div className="font-semibold font-mono text-cyan">{c.name}</div>
+                                <div className="text-xs text-dim font-mono">{c.id?.substring(0, 12)}</div>
+                              </td>
+                              <td className="font-mono text-xs text-muted">{c.image}</td>
+                              <td>
+                                <span className={`badge ${isRunning ? 'badge-ok' : 'badge-error'}`}>
+                                  {c.status}
+                                </span>
+                              </td>
+                              <td style={{ width: '200px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.2rem' }}>
+                                  <span className="text-xs font-mono font-bold text-cyan">{cpu.toFixed(1)}%</span>
+                                  <Sparkline data={cpuHistory} color="var(--cyan-400)" width={95} height={20} unit="%" />
+                                </div>
+                                <div className="progress-bar-bg">
+                                  <div className={`progress-bar-fill ${cpu > 80 ? 'fill-rose' : 'fill-emerald'}`} style={{ width: `${Math.min(100, cpu)}%` }} />
+                                </div>
+                              </td>
+                              <td style={{ width: '240px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.2rem' }}>
+                                  <div className="text-xs font-mono">
+                                    <span className="font-bold text-violet">{memPct.toFixed(1)}%</span>
+                                    <span className="text-dim ml-1" style={{ fontSize: '0.7rem' }}>({memUsed > 0 ? `${memUsed.toFixed(0)}MB` : '—'})</span>
+                                  </div>
+                                  <Sparkline data={memHistory} color="var(--violet-400)" width={95} height={20} unit="%" />
+                                </div>
+                                <div className="progress-bar-bg" style={{ marginBottom: cMetrics.leak_risk ? '0.25rem' : '0' }}>
+                                  <div
+                                    className={`progress-bar-fill ${memPct > 90 ? 'fill-rose' : memPct > 80 ? 'fill-amber' : 'fill-emerald'}`}
+                                    style={{ width: `${Math.min(100, memPct)}%` }}
+                                  />
+                                </div>
+                                {cMetrics.leak_risk && (
+                                  <span className="badge badge-warn text-xs" style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem' }}>
+                                    📈 +{cMetrics.mem_trend_mb_hr} MB/hr (Leak Risk)
+                                  </span>
+                                )}
+                              </td>
                             <td>
                               <div style={{ display: 'flex', gap: '0.4rem' }}>
                                 <button

@@ -14,7 +14,7 @@ import docker_ops
 import llm_client
 from config import MASTER_HOST, MASTER_PORT, API_SECRET
 from slave_registry import registry
-from database import init_db, audit
+from database import init_db, audit, db_record_container_metrics, db_record_host_metrics, db_get_container_metrics, db_get_metrics_summary, db_prune_old_metrics
 from services.log_pipeline import log_pipeline
 from services.heal_engine import heal_engine
 from services.crash_detector import crash_detector
@@ -63,12 +63,20 @@ ws_manager = ConnectionManager()
 # ── Background tasks ──────────────────────────────────────────────────────────
 
 async def slave_monitor():
+    iteration = 0
     while True:
         await asyncio.sleep(10)
+        iteration += 1
+        m_stats = get_master_host_stats()
+        if m_stats:
+            asyncio.create_task(db_record_host_metrics("master", m_stats, time.time()))
+        if iteration % 180 == 0:  # ~every 30 minutes prune metrics older than 24h
+            asyncio.create_task(db_prune_old_metrics(24))
+
         await ws_manager.broadcast({
             "event": "slave_status",
             "data":  registry.all(),
-            "master_host_stats": get_master_host_stats(),
+            "master_host_stats": m_stats,
             "ts":    time.time(),
         })
 
@@ -275,6 +283,10 @@ async def receive_stats(req: StatsRequest, x_slave_token: Optional[str] = Header
             raise HTTPException(status_code=401, detail="Unauthorized slave token")
     if req.host_stats:
         registry.update_host_stats(req.slave_id, req.host_stats)
+        asyncio.create_task(db_record_host_metrics(req.slave_id, req.host_stats, req.ts))
+    if req.stats:
+        asyncio.create_task(db_record_container_metrics(req.slave_id, req.stats, req.ts))
+
     await ws_manager.broadcast({
         "event":      "stats_update",
         "slave_id":   req.slave_id,
@@ -284,6 +296,19 @@ async def receive_stats(req: StatsRequest, x_slave_token: Optional[str] = Header
     })
     return {"status": "ok"}
 
+
+
+# ── Observability & Telemetry APIs (Phase 4) ─────────────────────────────────
+
+@app.get("/metrics/summary", tags=["metrics"], summary="Rolling metrics history for containers and hosts (viewer+)")
+async def get_metrics_summary_route(user: dict = Depends(get_current_user)):
+    return await db_get_metrics_summary(points=25)
+
+
+@app.get("/metrics/container/{container_name}", tags=["metrics"], summary="Detailed historical metrics for a container (viewer+)")
+async def get_container_metrics_route(container_name: str, limit: int = 40, user: dict = Depends(get_current_user)):
+    points = await db_get_container_metrics(container_name, limit)
+    return {"container": container_name, "points": points, "count": len(points)}
 
 # ── WebSocket — live dashboard feed ──────────────────────────────────────────
 

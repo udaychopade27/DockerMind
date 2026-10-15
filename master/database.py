@@ -108,6 +108,32 @@ async def init_db():
             value TEXT NOT NULL,
             updated_at REAL NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS metrics_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slave_id TEXT NOT NULL,
+            container_name TEXT NOT NULL,
+            cpu_pct REAL NOT NULL,
+            mem_pct REAL NOT NULL,
+            mem_used_mb REAL NOT NULL,
+            mem_limit_mb REAL NOT NULL,
+            ts REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_metrics_container_ts ON metrics_history(container_name, ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics_history(ts DESC);
+
+        CREATE TABLE IF NOT EXISTS host_metrics_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id TEXT NOT NULL,
+            cpu_pct REAL NOT NULL,
+            mem_pct REAL NOT NULL,
+            mem_used_gb REAL NOT NULL,
+            mem_total_gb REAL NOT NULL,
+            disk_pct REAL NOT NULL,
+            ts REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_host_metrics_node_ts ON host_metrics_history(node_id, ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_host_metrics_ts ON host_metrics_history(ts DESC);
         """)
 
         # Safely migrate runbooks table to add stop_on_failure and retry_count if not present
@@ -276,3 +302,150 @@ async def db_get_all_settings() -> dict:
     except Exception as e:
         print(f"[DB] Error getting all settings: {e}")
         return {}
+
+
+async def db_record_container_metrics(slave_id: str, stats_list: list, ts: float = 0):
+    """Persist a batch of container telemetry snapshots."""
+    if not stats_list:
+        return
+    ts = ts or time.time()
+    rows = []
+    for s in stats_list:
+        rows.append((
+            slave_id,
+            s.get("name", ""),
+            float(s.get("cpu_pct", 0.0)),
+            float(s.get("mem_pct", 0.0)),
+            float(s.get("mem_used_mb", 0.0)),
+            float(s.get("mem_limit_mb", 0.0)),
+            ts
+        ))
+    try:
+        async with get_db() as db:
+            await db.executemany(
+                """INSERT INTO metrics_history (slave_id, container_name, cpu_pct, mem_pct, mem_used_mb, mem_limit_mb, ts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                rows
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[DB] Error recording container metrics: {e}")
+
+
+async def db_record_host_metrics(node_id: str, host_stats: dict, ts: float = 0):
+    """Persist a host node telemetry snapshot."""
+    if not host_stats:
+        return
+    ts = ts or time.time()
+    try:
+        async with get_db() as db:
+            await db.execute(
+                """INSERT INTO host_metrics_history (node_id, cpu_pct, mem_pct, mem_used_gb, mem_total_gb, disk_pct, ts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    node_id,
+                    float(host_stats.get("cpu_pct", 0.0)),
+                    float(host_stats.get("mem_pct", 0.0)),
+                    float(host_stats.get("mem_used_gb", 0.0)),
+                    float(host_stats.get("mem_total_gb", 0.0)),
+                    float(host_stats.get("disk_pct", 0.0)),
+                    ts
+                )
+            )
+            await db.commit()
+    except Exception as e:
+        print(f"[DB] Error recording host metrics: {e}")
+
+
+async def db_get_container_metrics(container_name: str, limit: int = 30) -> list:
+    """Retrieve chronological telemetry points for a specific container."""
+    try:
+        async with get_db() as db:
+            async with db.execute(
+                """SELECT cpu_pct, mem_pct, mem_used_mb, mem_limit_mb, ts
+                   FROM metrics_history
+                   WHERE container_name = ?
+                   ORDER BY ts DESC LIMIT ?""",
+                (container_name, limit)
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in reversed(rows)]
+    except Exception as e:
+        print(f"[DB] Error retrieving container metrics: {e}")
+        return []
+
+
+async def db_get_metrics_summary(points: int = 20) -> dict:
+    """Retrieve rolling sparkline metrics and leak detection for all active containers and hosts."""
+    summary = {"containers": {}, "hosts": {}}
+    try:
+        async with get_db() as db:
+            cutoff = time.time() - 86400  # last 24h
+            async with db.execute("SELECT DISTINCT container_name FROM metrics_history WHERE ts > ?", (cutoff,)) as cur:
+                cnames = [r[0] for r in await cur.fetchall()]
+
+            for cname in cnames:
+                async with db.execute(
+                    """SELECT cpu_pct, mem_pct, mem_used_mb, ts
+                       FROM metrics_history
+                       WHERE container_name = ?
+                       ORDER BY ts DESC LIMIT ?""",
+                    (cname, points)
+                ) as cur:
+                    rows = list(reversed(await cur.fetchall()))
+                    if rows:
+                        cpu_series = [round(r["cpu_pct"], 1) for r in rows]
+                        mem_series = [round(r["mem_used_mb"], 1) for r in rows]
+                        mem_pct_series = [round(r["mem_pct"], 1) for r in rows]
+
+                        leak_risk = False
+                        mem_trend_mb_hr = 0.0
+                        if len(mem_series) >= 4:
+                            half = len(mem_series) // 2
+                            first_half_avg = sum(mem_series[:half]) / half
+                            second_half_avg = sum(mem_series[half:]) / (len(mem_series) - half)
+                            time_span_hr = max(0.01, (rows[-1]["ts"] - rows[0]["ts"]) / 3600.0)
+                            mem_trend_mb_hr = round((second_half_avg - first_half_avg) / time_span_hr, 1)
+                            if mem_trend_mb_hr > 5.0 and second_half_avg > first_half_avg:
+                                leak_risk = True
+
+                        summary["containers"][cname] = {
+                            "cpu": cpu_series,
+                            "mem": mem_series,
+                            "mem_pct": mem_pct_series,
+                            "leak_risk": leak_risk,
+                            "mem_trend_mb_hr": mem_trend_mb_hr,
+                        }
+
+            async with db.execute("SELECT DISTINCT node_id FROM host_metrics_history WHERE ts > ?", (cutoff,)) as cur:
+                nodes = [r[0] for r in await cur.fetchall()]
+
+            for node in nodes:
+                async with db.execute(
+                    """SELECT cpu_pct, mem_pct, ts
+                       FROM host_metrics_history
+                       WHERE node_id = ?
+                       ORDER BY ts DESC LIMIT ?""",
+                    (node, points)
+                ) as cur:
+                    rows = list(reversed(await cur.fetchall()))
+                    if rows:
+                        summary["hosts"][node] = {
+                            "cpu": [round(r["cpu_pct"], 1) for r in rows],
+                            "mem_pct": [round(r["mem_pct"], 1) for r in rows],
+                        }
+    except Exception as e:
+        print(f"[DB] Error getting metrics summary: {e}")
+    return summary
+
+
+async def db_prune_old_metrics(retention_hours: int = 24):
+    """Prune metric snapshots older than retention threshold."""
+    try:
+        cutoff = time.time() - (retention_hours * 3600)
+        async with get_db() as db:
+            await db.execute("DELETE FROM metrics_history WHERE ts < ?", (cutoff,))
+            await db.execute("DELETE FROM host_metrics_history WHERE ts < ?", (cutoff,))
+            await db.commit()
+    except Exception as e:
+        print(f"[DB] Error pruning metrics: {e}")

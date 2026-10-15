@@ -716,3 +716,10 @@ tr:hover td {
 .logout-btn:hover {
   background: rgba(239, 68, 68, 0.15) !important;
 }
+
+/* Phase 4: Topology animated data bus stroke */
+@keyframes dash-stream {
+  to {
+    stroke-dashoffset: -20;
+  }
+}

@@ -23,7 +23,10 @@ import {
   Radio,
   FileText,
   Sliders,
-  ChevronRight
+  ChevronRight,
+  Eye,
+  EyeOff,
+  Lock
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -236,18 +239,11 @@ function ClusterTopologyMap({ slaves = [], masterStats, selectedNodeFilter, onSe
 
 // ── Login Screen Component ──────────────────────────────────────────────────
 function LoginScreen({ onLoginSuccess }) {
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('admin123');
-  const [role, setRole] = useState('admin');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  const handlePreset = (u, p, r) => {
-    setUsername(u);
-    setPassword(p);
-    setRole(r);
-    setError('');
-  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -273,21 +269,16 @@ function LoginScreen({ onLoginSuccess }) {
       }
 
       const data = await res.json();
-      const ranks = { viewer: 0, operator: 1, admin: 2 };
       const actualRole = data.role || 'viewer';
-      if ((ranks[actualRole] ?? 0) < (ranks[role] ?? 0)) {
-        setError(`Access Denied: Account '${username}' has role '${actualRole}', which cannot elevate to '${role}'.`);
-        setLoading(false);
-        return;
-      }
+      const authenticatedUser = data.username || username.trim();
 
       localStorage.setItem('dockermind_token', data.access_token);
-      localStorage.setItem('dockermind_user', data.username || username);
-      localStorage.setItem('dockermind_role', data.role || role);
+      localStorage.setItem('dockermind_user', authenticatedUser);
+      localStorage.setItem('dockermind_role', actualRole);
 
       onLoginSuccess(data.access_token, {
-        username: data.username || username,
-        role: data.role || role,
+        username: authenticatedUser,
+        role: actualRole,
       });
     } catch (err) {
       setError('Connection failed. Please ensure the DockerMind master container is online.');
@@ -314,45 +305,59 @@ function LoginScreen({ onLoginSuccess }) {
           </div>
         )}
 
-        <form onSubmit={handleLogin} className="login-form">
+        <form onSubmit={handleLogin} className="login-form" autoComplete="off">
           <div className="form-group">
             <label className="form-label font-mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Username</label>
             <input
               type="text"
               className="input-field font-mono"
-              placeholder="e.g. admin"
+              placeholder="Enter username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck="false"
               required
             />
           </div>
 
           <div className="form-group">
             <label className="form-label font-mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Password</label>
-            <input
-              type="password"
-              className="input-field font-mono"
-              placeholder="e.g. admin123"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label font-mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Role Selection</label>
-            <select
-              className="input-field font-mono"
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              style={{ cursor: 'pointer' }}
-            >
-              <option value="admin">admin (Full Cluster Control & Exec)</option>
-              <option value="operator">operator (Remediate, Restart & Dispatch)</option>
-              <option value="viewer">viewer (Read-Only Telemetry & Logs)</option>
-            </select>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                className="input-field font-mono"
+                placeholder="Enter password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck="false"
+                style={{ width: '100%', paddingRight: '2.5rem' }}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                tabIndex={-1}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                style={{
+                  position: 'absolute',
+                  right: '0.75rem',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: 0
+                }}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
           </div>
 
           <button
@@ -365,34 +370,9 @@ function LoginScreen({ onLoginSuccess }) {
           </button>
         </form>
 
-        <div className="login-presets" style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
-          <div className="text-xs font-mono text-dim" style={{ marginBottom: '0.5rem' }}>QUICK PRESETS:</div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button
-              type="button"
-              className="btn btn-secondary btn-xs font-mono"
-              style={{ flex: 1, borderColor: role === 'admin' ? 'var(--cyan-400)' : 'var(--border-subtle)' }}
-              onClick={() => handlePreset('admin', 'admin123', 'admin')}
-            >
-              admin
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-xs font-mono"
-              style={{ flex: 1, borderColor: role === 'operator' ? 'var(--amber-400)' : 'var(--border-subtle)' }}
-              onClick={() => handlePreset('uday', 'test123', 'operator')}
-            >
-              uday:op
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary btn-xs font-mono"
-              style={{ flex: 1, borderColor: role === 'viewer' ? 'var(--emerald-400)' : 'var(--border-subtle)' }}
-              onClick={() => handlePreset('uday2', 'test123', 'viewer')}
-            >
-              uday2:view
-            </button>
-          </div>
+        <div style={{ marginTop: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', color: 'var(--text-dim)', fontSize: '0.75rem' }} className="font-mono">
+          <Shield size={13} className="text-emerald" />
+          <span>Encrypted Session • RBAC Enforced</span>
         </div>
       </div>
     </div>

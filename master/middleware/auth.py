@@ -223,6 +223,7 @@ class JWTMiddleware(BaseHTTPMiddleware):
     # Slave agents + Swagger UI + login bypass token check entirely
     PUBLIC_PREFIXES = (
         "/health",
+        "/metrics",
         "/auth/",
         "/slaves/register",
         "/slaves/heartbeat",

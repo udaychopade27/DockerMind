@@ -90,9 +90,9 @@ curl -sSL https://raw.githubusercontent.com/<org>/dockermind/main/install.sh | b
 Enable SRE teams to scrape DockerMind metrics directly into existing monitoring stacks (Prometheus, Grafana, Datadog) without relying solely on the Web UI.
 
 ### Master Prometheus Endpoint (`GET /metrics`)
-- [ ] **2.1 Standard Prometheus Exporter Implementation (`master/routers/metrics.py`):**
+- [x] **2.1 Standard Prometheus Exporter Implementation (`master/routers/metrics.py`):**
   - Expose `GET /metrics` in standard Prometheus exposition format (`text/plain; version=0.0.4`).
-- [ ] **2.2 Metric Definitions & Gauges:**
+- [x] **2.2 Metric Definitions & Gauges:**
   - **Cluster & Slave Health:**
     - `dockermind_slaves_total{status="online|offline"}`
     - `dockermind_node_cpu_usage_pct{node}`
@@ -109,7 +109,7 @@ Enable SRE teams to scrape DockerMind metrics directly into existing monitoring 
     - `dockermind_ai_diagnoses_total{model, severity="critical|warn|ok"}`
     - `dockermind_healing_actions_total{action="restart|kill|recreate", status="success|failure"}`
     - `dockermind_alerts_active_total{severity}`
-- [ ] **2.3 Pre-built Grafana Dashboard Template:**
+- [x] **2.3 Pre-built Grafana Dashboard Template:**
   - Create `monitoring/grafana/dockermind-dashboard.json`.
   - Include panels for Cluster Topology, True Memory Consumption Sparklines, Crash Loop Alerts, and AI Healing Action logs.
 
@@ -203,8 +203,8 @@ Allow administrators to rotate AI API keys, configure Slack/Discord/Email notifi
 | :--- | :---: | :---: | :--- | :---: |
 | **Unified Master & Slave Installer** | Phase 1 | **P0** | `install.sh` + `.env.template` + join generator | `[ ]` Ready to Start |
 | **Persistent User Management & RBAC UI** | Phase 4 | **P0** | SQLite `users` table + CRUD endpoints + UI Panel | `[ ]` Queued |
-| **Prometheus Exporter (`/metrics`)** | Phase 2 | **P0** | `master/routers/metrics_exporter.py` | `[ ]` Queued |
-| **Pre-built Grafana Dashboard** | Phase 2 | **P1** | `monitoring/grafana/dockermind-overview.json` | `[ ]` Queued |
+| **Prometheus Exporter (`/metrics`)** | Phase 2 | **P0** | `master/routers/metrics.py` | `[x]` Completed |
+| **Pre-built Grafana Dashboard** | Phase 2 | **P1** | `monitoring/grafana/dockermind-dashboard.json` | `[x]` Completed |
 | **Podman Socket & Runtime Support** | Phase 3A | **P1** | `slave/runtime_detector.go` | `[ ]` Queued |
 | **Docker Swarm Overlay Support** | Phase 3B | **P2** | Swarm collector parser | `[ ]` Queued |
 | **Kubernetes DaemonSet Spec** | Phase 3C | **P3** | `deploy/kubernetes/dockermind-agent.yaml` | `[ ]` Queued |

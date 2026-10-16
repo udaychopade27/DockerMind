@@ -32,6 +32,7 @@ from routers import jobs as jobs_router
 from routers import runbooks as runbooks_router
 from routers import auth as auth_router
 from routers import settings as settings_router
+from routers import metrics as metrics_router
 from middleware.redact_filter import install_global_redactor, get_redacted_logging_config
 
 # Install sensitive token redaction across all loggers
@@ -162,6 +163,7 @@ app.include_router(logs_router.router)
 app.include_router(jobs_router.router)
 app.include_router(runbooks_router.router)
 app.include_router(settings_router.router)
+app.include_router(metrics_router.router)
 
 
 # ── Request / response models ─────────────────────────────────────────────────

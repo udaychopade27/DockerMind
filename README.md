@@ -1,31 +1,39 @@
 # DockerMind — Autonomous AI Site Reliability & DevOps Agent
 
-**DockerMind** is a self-hosted, autonomous AI Site Reliability Engineering (SRE) and DevOps platform built for Docker environments. It combines distributed host telemetry, Docker daemon event streaming, and local or cloud LLMs (Google Gemini, OpenRouter, and Ollama) to automatically monitor, diagnose, alert, and heal containerized workloads across multi-node clusters.
+<div align="center">
+
+![DockerMind Banner](https://img.shields.io/badge/DockerMind-Autonomous%20AI%20SRE-blue?style=for-the-badge&logo=docker)
+
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go)](https://golang.org)
+[![Python Version](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
+[![React](https://img.shields.io/badge/React-18.x-61DAFB?style=flat-square&logo=react)](https://react.dev)
+[![Docker](https://img.shields.io/badge/Runtime-Docker%20%7C%20Podman%20%7C%20K8s-2496ED?style=flat-square&logo=docker)](https://docker.com)
+[![Prometheus](https://img.shields.io/badge/Metrics-Prometheus%20Ready-E6522C?style=flat-square&logo=prometheus)](https://prometheus.io)
+[![Grafana](https://img.shields.io/badge/Grafana-Dashboard%20Included-F46800?style=flat-square&logo=grafana)](https://grafana.com)
+[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+
+**Self-hosted, autonomous AI Site Reliability Engineering (SRE) and DevOps platform for Docker, Podman, and Kubernetes clusters.**
+
+[Deploy in 1 Minute](DEPLOYMENT_GUIDE.md) • [Architecture](#-system-architecture) • [Web Console](#-real-time-react-web-console) • [Prometheus & Grafana](#-prometheus--grafana-monitoring) • [API Reference](#-api-endpoints-reference)
+
+</div>
 
 ---
 
 ## 🚀 What is DockerMind?
 
-Modern containerized applications fail in complex ways: silent memory leaks triggering the Linux Out-Of-Memory (OOM) killer, cascading crash loops, database connection pool exhaustion, and misconfigured entrypoints. Typically, resolving these requires on-call engineers to wake up, SSH into remote hosts, run `docker logs`, dig through megabytes of stacktraces, and manually restart services.
+Modern containerized applications fail silently and unpredictably: memory leaks triggering Linux Out-Of-Memory (OOM) kills, cascading crash loops, exhausted database connection pools, and unhandled panics. Resolving these traditionally requires on-call engineers to wake up at 3 AM, SSH into remote hosts, sift through megabytes of stacktraces, and manually restart services.
 
-**DockerMind automates this entire incident lifecycle:**
-1. **Listens:** Lightweight Go agents (Slaves) attached to Docker sockets continuously monitor container events and sample memory/CPU usage.
-2. **Filters & Streams:** The agents intelligently filter logs for anomalies and stream error batches with high-water mark cursor tracking to the Master.
-3. **Diagnoses:** The Master LLM pipeline assesses the logs, determines the exact root cause, assigns a severity (`ok`, `warn`, `error`, `critical`), and proposes an actionable remediation plan.
-4. **Auto-Heals:** If safe to heal, DockerMind executes automated remediation (restart, start, stop, or exec commands) with built-in **exponential backoff** and **circuit breaker** protection.
-5. **Alerts & Audits:** Immediate, rich notifications are pushed to Slack and Discord, events are broadcast via WebSockets to connected dashboards, and every automated action is preserved in an immutable SQLite audit log.
+**DockerMind automates the entire incident lifecycle from detection to root-cause diagnosis, autonomous remediation, and alerting:**
 
----
-
-## 💡 How DockerMind Improves Operational Quality & Uptime
-
-| Operational Problem | Traditional Approach | DockerMind Solution |
-| :--- | :--- | :--- |
-| **Silent OOM Kills** | Container disappears with exit code 137; unnoticed until users report downtime. | Docker event watcher immediately detects OOM kills and high memory usage (>90%), alerts Slack with exact MB telemetry, and restarts the container safely. |
-| **Infinite Crash Loops** | Broken service restarts hundreds of times per minute, exhausting host CPU and filling disk logs. | Sliding-window crash detector tracks restarts; auto-heal enforces exponential backoff (10s → 30s → 60s → 120s → 300s) and a **circuit breaker** halts restarts after 5 failed attempts. |
-| **Noisy Log Triage** | Engineers spend 30–60 minutes parsing 10,000 log lines to find the single root cause. | LLM analysis pipeline extracts the core failure, formats root cause and recommended fix, and presents it in seconds. |
-| **Multi-Host Management** | SSH into 5 different servers to run container maintenance or collect logs. | **Multi-Slave Fleet Command Dispatch** allows operators to trigger actions across `all` nodes or targeted tag groups simultaneously. |
-| **Cascading Outages** | Automated reboot loops thrash dependencies. | Cooldown tiers and circuit breakers isolate persistent failures and request manual intervention before cluster stability is compromised. |
+1. **Continuous Telemetry & Event Streaming:** Lightweight Go agents (Slaves) attached to container runtime sockets continuously stream container events (`die`, `oom`, `health_status`), sample True RSS memory, and capture log anomalies with high-water mark cursor tracking.
+2. **AI-Powered Root-Cause Analysis:** The Master LLM pipeline (Google Gemini, OpenRouter, or Local Ollama) parses error bursts, strips noise, isolates the core failure, assigns a severity rating, and drafts an actionable remediation plan in seconds.
+3. **Autonomous Self-Healing with Circuit Breakers:** If auto-healing is safe, DockerMind executes automated container recovery (restart, stop, start, or custom command) protected by **exponential backoff** (10s → 30s → 60s → 120s → 300s) and a **circuit breaker** to prevent infinite reboot loops.
+4. **Multi-Channel Alert Dispatching:** Instant incident summaries are delivered to **Slack**, **Discord**, and **Email (SMTP)** with direct links to the web console.
+5. **Zero-Downtime Settings Vault:** Rotate AI API keys, switch LLM models, and reconfigure notification webhooks directly from the Web Console without restarting containers.
+6. **Enterprise RBAC Directory:** Persistent SQLite-backed user management with granular permission roles (`admin`, `operator`, `viewer`).
+7. **Prometheus & Grafana Native:** Built-in `/metrics` exporter endpoint and a pre-configured Grafana dashboard template for end-to-end cluster observability.
 
 ---
 
@@ -33,233 +41,237 @@ Modern containerized applications fail in complex ways: silent memory leaks trig
 
 ```mermaid
 flowchart TD
-    subgraph Slave_Nodes ["Distributed Slave Nodes (Go Agent)"]
-        DW["Docker Watcher\n(Socket Listener)"] -->|Cursor-based Log Stream| LF["Log Filter & Debouncer"]
-        HR["Health Reporter\n(Stats Poller & Events)"] -->|die / oom / mem > 90%| ES["Event Streamer\n(Queue with Retry)"]
-        EX["HTTP Command Executor\n(:8080 with X-Slave-Token)"]
+    subgraph Edge_Hosts ["Monitored Infrastructure (Docker / Podman / Kubernetes)"]
+        subgraph Agent ["Distributed Go Slave Agent (<20MB RAM)"]
+            DW["Runtime Socket Watcher
+(/var/run/docker.sock or CRI)"] -->|Filtered Log Stream| LF["Log Anomaly Filter & Debouncer"]
+            HR["Stats Poller & Event Listener"] -->|die / oom / mem > 90%| ES["Event Streamer (Queue & Retry)"]
+            EX["Command Executor (:8080)
+(mTLS / X-Slave-Token)"]
+        end
     end
 
-    subgraph Master_Node ["DockerMind Master (FastAPI + Python)"]
-        AUTH["JWT & RBAC Middleware\n(viewer / operator / admin)"]
-        REG["Slave Registry\n(Heartbeat & TTL)"]
+    subgraph Master_Control_Plane ["DockerMind Master Control Plane (:8000)"]
+        AUTH["JWT & RBAC Middleware
+(admin / operator / viewer)"]
+        REG["Slave Registry & Health Monitor
+(Heartbeat & Node Topology)"]
         
-        LP["Log Pipeline\n(Async Queue)"] --> LLM["Multi-Provider LLM Engine\n(Gemini / OpenRouter / Ollama)"]
+        SE["Ingestion API
+(/slaves/events & /slaves/logs)"] --> CD["Sliding-Window Crash Detector"]
+        CD --> HE["Self-Healing Engine
+(Backoff & Circuit Breaker)"]
         
-        SE["Slave Ingestion API\n(/slaves/events & /slaves/logs)"] --> CD["Crash Detector\n(Sliding Window)"]
-        CD --> HE["Heal Engine\n(Backoff & Circuit Breaker)"]
-        LLM -->|auto_heal = true| HE
+        LP["Async Log Pipeline Queue"] --> LLM["Multi-Provider AI SRE Engine
+(Gemini / OpenRouter / Ollama)"]
+        LLM -->|Auto-Remediation Plan| HE
+        HE -->|Remote Command Dispatch| EX
+
+        VAULT["Zero-Downtime Settings Vault
+(SQLite + Dynamic In-Memory Cache)"]
+        NOTIF["Multi-Channel Notifier
+(Slack / Discord / SMTP Email)"]
+        METRICS["Prometheus Exporter
+(GET /metrics)"]
+        WS["WebSocket Event Broadcast
+(ws://master:8000/ws)"]
         
-        HE -->|Local Ops| DO["Docker SDK Engine"]
-        HE -->|Remote Ops| JD["Fleet Job Dispatcher"]
-        JD -->|HTTP POST| EX
-        
-        AS["In-Memory Alert Store\n(500 Capacity Deque)"]
-        DB["SQLite Database\n(aiosqlite WAL Mode)"]
-        NT["Notifier\n(Slack / Discord Webhooks)"]
-        WS["WebSocket Hub\n(/ws Broadcast)"]
-        
-        CD --> AS
-        LP --> AS
-        AS --> NT
-        HE --> DB
-        JD --> DB
-        AS --> WS
+        LLM --> NOTIF
+        HE --> NOTIF
     end
 
-    subgraph UI ["Real-Time Dashboard (React SPA)"]
-        DASH["React + Vite Dashboard"] <-->|WebSocket Stream + REST API| Master_Node
+    subgraph Observability_Clients ["Operations & Monitoring Clients"]
+        DASH["React 18 Web Console (:3000)
+(Fleet / Incidents / RBAC / Vault)"] <-->|REST & WebSocket| Master_Control_Plane
+        PROM["Prometheus Server"] -->|Scrapes GET /metrics| METRICS
+        GRAF["Grafana Dashboard"] -->|Visualizes| PROM
     end
 ```
 
 ---
 
-## 📂 Codebase Breakdown & Components
+## ⚡ Quickstart: 1-Line Universal Installer
 
-### Master Node (`master/`)
-- **`main.py`**: FastAPI application entrypoint. Initializes database, seeds runbooks, mounts WebSocket hub (`/ws`), registers routers, and exposes container lifecycle endpoints.
-- **`config.py`**: Centralized configuration loader for ports, database paths, LLM provider settings, and API secrets.
-- **`database.py`**: SQLite database interface powered by `aiosqlite`. Automatically configures `aiosqlite.Row` factories, WAL journal mode, and manages tables for `jobs`, `runbooks`, and `audit_log`.
-- **`docker_ops.py`**: Direct Docker SDK wrapper on the Master host (container list, inspect, logs, restart, start, stop, exec).
-- **`llm_client.py`**: Multi-provider LLM client with intelligent fallback:
-  - **Online Mode:** Google Gemini (`gemini-2.5-flash`) as primary, automatically falling back to OpenRouter (`gemma-4-26b`) if rate-limited or quota is exceeded.
-  - **Local Mode:** Self-hosted Ollama (`qwen2.5-coder:1.5b`) for air-gapped/offline setups.
-  - Parses and guarantees structured JSON schema output (`severity`, `root_cause`, `fix`, `auto_heal`, `heal_action`).
-- **`slave_registry.py`**: In-memory registry tracking slave node heartbeats, IP addresses, online/offline status, tags, and container counts.
-- **`middleware/auth.py`**: JWT Bearer token authentication and Role-Based Access Control (`viewer`, `operator`, `admin`) with bcrypt password verification.
-- **`routers/`**:
-  - `auth.py`: Login, token generation, user creation, and current user profile.
-  - `slaves.py`: Public ingestion endpoints for slave registration, heartbeats, logs, events, multi-slave fleet dispatch (`POST /slaves/dispatch`), and circuit-breaker reset.
-  - `alerts.py`: Query alerts by severity/container, unhealed alerts, crash-loop summaries, and alert acknowledgment.
-  - `jobs.py`: Scheduled job creation, status tracking, cancellation, and audit log inspection.
-  - `logs.py`: Container log retrieval and on-demand LLM log analysis.
-  - `runbooks.py`: Declarative automated runbook creation, execution, and listing.
-- **`services/`**:
-  - `log_pipeline.py`: Asynchronous queue for processing log batches received from slaves, running LLM evaluations, populating alerts, notifying webhooks, and executing auto-heals.
-  - `crash_detector.py`: Tracks container deaths in a 5-minute sliding window, calculates crash frequencies, detects crash loops, and identifies exit code signatures.
-  - `heal_engine.py`: Healing execution with **Exponential Backoff** (`10s → 30s → 60s → 120s → 300s`) and **Circuit Breaker** (max 5 retries). Executes local operations or dispatches to remote slaves.
-  - `job_dispatcher.py`: Executes scheduled jobs and runs parallel multi-slave fleet operations using `asyncio.gather()`.
-  - `scheduler.py`: Background job scheduler polling pending jobs in SQLite every 10 seconds.
-  - `notifier.py`: Dispatches rich webhook alerts to Slack and Discord.
+DockerMind provides a self-contained POSIX bootstrapper that provisions the entire Master control plane or connects distributed edge slaves with zero manual configuration.
 
-### Slave Agent (`slave/`)
-- **`main.go`**: Agent entrypoint. Discovers outbound network IP, handles persistent registration with the Master, starts workers, and handles graceful shutdown.
-- **`docker_watcher.go`**: Connects to the host Docker socket (`/var/run/docker.sock`). Maintains active container inventory, tracks high-water mark log timestamps to avoid re-sending duplicate logs, and pre-filters logs using anomaly keywords.
-- **`health_reporter.go`**: Real-time event watcher listening to Docker engine events (`die`, `oom`, `start`, `stop`). Samples container CPU and memory stats, detects memory limit breaches (>90%), and immediately dispatches recent logs when a container dies.
-- **`event_streamer.go`**: Non-blocking queued event forwarder with exponential retry (up to 3 attempts) ensuring critical events reach the Master even during network blips.
-- **`executor.go`**: HTTP server listening on port `8080`. Accepts and executes commands sent from Master (`restart`, `start`, `stop`, `exec`, `logs`, `containers`) secured by `X-Slave-Token`.
-- **`grpc_client.go`**: HTTP/mTLS communication client with automatic reconnection and re-registration on master reboot.
+### Deploy the Master Control Plane
 
----
-
-## ⚙️ Configuration & Setup
-
-### 1. Requirements
-- Docker & Docker Compose installed.
-- Ports `8000` (Master API) and `8080` (Slave Agent) open.
-- Optional: Gemini API key for online AI analysis (or Ollama for local offline mode).
-
-### 2. Environment Variables (`.env`)
-
-```ini
-# Security & JWT Auth
-JWT_SECRET=my-super-secure-jwt-key-32chars
-JWT_EXPIRE_HOURS=24
-ADMIN_PASSWORD=admin123
-
-# Pre-seeded users (format: username:password:role,...)
-USERS=admin:admin123:admin,uday:test123:operator,uday2:test123:viewer
-
-# LLM Provider Configuration
-LLM_PROVIDER=online
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
-
-# Fallback Provider
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-OPENROUTER_MODEL=google/gemma-4-26b-a4b-it:free
-
-# Master Server Settings
-MASTER_HOST=0.0.0.0
-MASTER_PORT=8000
-API_SECRET=dockermind-dev-secret
-DB_PATH=/app/data/dockermind.db
-
-# Notifications (Slack & Discord)
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-DISCORD_WEBHOOK_URL=
-NOTIFY_MIN_SEVERITY=error
-```
-
-### 3. Quick Start
+Run the bootstrapper on your master server:
 
 ```bash
-# 1. Generate mTLS certificates
-bash scripts/gen_certs.sh
-
-# 2. Build and start containers
-docker compose up -d --build
-
-# 3. View logs
-docker compose logs -f master
+curl -fsSL https://raw.githubusercontent.com/dockermind/dockermind/main/install.sh | bash
 ```
 
----
+*Or within a cloned repository:*
+```bash
+bash install.sh
+```
 
-## 📡 API Reference & Endpoints
-
-Interactive Swagger UI documentation is available at **`http://localhost:8000/docs`**.
-
-### 1. Authentication (`/auth`)
-| Method | Endpoint | Access | Description |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/auth/login` | Public | Authenticates credentials and returns JWT Bearer token |
-| `GET` | `/auth/me` | Viewer+ | Returns current user subject, role, and expiration |
-| `GET` | `/auth/users` | Admin | Lists all configured users and their roles |
-| `POST` | `/auth/users` | Admin | Creates a new user |
-| `DELETE`| `/auth/users/{username}` | Admin | Deletes a user |
-
-### 2. Slave Management & Ingestion (`/slaves`)
-| Method | Endpoint | Access | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/slaves` | Viewer+ | Lists all registered slave nodes and status |
-| `POST` | `/slaves/register` | Public (Agent) | Registers a new slave node |
-| `POST` | `/slaves/heartbeat` | Public (Agent) | Receives heartbeat and container count |
-| `POST` | `/slaves/logs` | Public (Agent) | Ingests container logs into async LLM pipeline |
-| `POST` | `/slaves/events` | Public (Agent) | Ingests `die`, `oom`, and `health_fail` events |
-| `GET` | `/slaves/crash-loops`| Viewer+ | Lists containers currently in active crash loops |
-| `GET` | `/slaves/pipeline/stats` | Viewer+ | Returns log pipeline queue and processed stats |
-| `POST` | `/slaves/dispatch` | Operator+ | Dispatches fleet commands across multiple/all slaves |
-| `POST` | `/slaves/circuit-breaker/reset` | Operator+ | Clears backoff delay and resets circuit breaker |
-| `DELETE`| `/slaves/{slave_id}`| Admin | Deregisters a slave node |
-
-### 3. Container Management (`/containers` & `/logs`)
-| Method | Endpoint | Access | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/containers` | Viewer+ | Lists containers across host with live status |
-| `GET` | `/containers/{name}/logs` | Viewer+ | Retrieves recent log lines for a container |
-| `POST` | `/containers/{name}/restart` | Operator+ | Restarts a local container |
-| `POST` | `/containers/{name}/start` | Operator+ | Starts a stopped container |
-| `POST` | `/containers/{name}/stop` | Operator+ | Stops a running container |
-| `POST` | `/containers/exec` | Admin | Executes an arbitrary shell command in a container |
-| `GET` | `/logs/{container_name}/analyze` | Operator+ | Triggers real-time LLM log analysis |
-
-### 4. AI & Auto-Healing (`/heal` & `/chat`)
-| Method | Endpoint | Access | Description |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/heal` | Operator+ | Fetches logs, queries LLM, and triggers auto-heal |
-| `POST` | `/chat` | Viewer+ | Conversational DevOps assistant prompt |
-
-### 5. Alerts & Incident Management (`/alerts`)
-| Method | Endpoint | Access | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/alerts` | Viewer+ | Lists incident alerts with filter by severity/container |
-| `GET` | `/alerts/unhealed` | Viewer+ | Lists unhealed critical and error alerts |
-| `GET` | `/alerts/crash-summary` | Viewer+ | Overview of active crash loops and alert counts |
-| `POST` | `/alerts/{id}/acknowledge` | Operator+ | Acknowledges and silences an alert |
-
-### 6. Scheduled Jobs & Audit Trail (`/jobs`)
-| Method | Endpoint | Access | Description |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/jobs` | Operator+ | Schedules a background or recurring maintenance job |
-| `GET` | `/jobs` | Viewer+ | Lists jobs and execution status |
-| `GET` | `/jobs/{id}` | Viewer+ | Retrieves specific job execution result |
-| `DELETE`| `/jobs/{id}` | Operator+ | Cancels a pending job |
-| `GET` | `/jobs/audit/log` | Admin | Full historical audit log of all system actions |
-
-### 7. WebSocket Live Feed (`/ws`)
-- Real-time streaming connection transmitting:
-  - `init`: Full node and container inventory upon connection.
-  - `slave_status`: Periodic node heartbeat changes.
-  - `container_lifecycle_event`: Instant death, start, stop, or OOM occurrences.
-  - `alert`: LLM diagnosis, severity badges, and recommended remediation.
-  - `auto_heal`: Healing execution outcome and backoff status.
-  - `stats_update`: Real-time CPU and Memory utilization per container.
+- **Interactive Prompts:** Configures your admin password, generates high-entropy `JWT_SECRET` and `API_SECRET` tokens, sets up mTLS certificates, and lets you choose your AI provider.
+- **Default Credentials:** If you leave the password blank or deploy headlessly, DockerMind sets:
+  - **Username:** `admin`
+  - **Password:** `admin` *(Identical to the Grafana convention).*
+- **Web Console:** Accessible immediately at `http://<SERVER_IP>:3000`.
 
 ---
 
-## 🎨 Task 5: Real-Time React Dashboard (Architecture & Design Plan)
+### Connect Distributed Edge Slaves
 
-The next step is building the **DockerMind Real-Time React Dashboard**.
+Once the Master starts, it automatically prints the exact 1-line command to connect your worker nodes:
 
-### UI Architecture & Tech Stack
-- **Framework:** React 18+ with Vite (blazing fast HMR, production bundle).
-- **Styling:** Modern Dark-Theme DevOps aesthetic (Glassmorphism, Tailwind CSS, Lucide Icons).
-- **State & Real-Time:** Native WebSocket connection to `ws://master:8000/ws` with automatic reconnection, synchronized with REST API queries.
+```bash
+curl -fsSL https://raw.githubusercontent.com/dockermind/dockermind/main/install.sh | bash -s -- \
+  --role slave \
+  --master http://<MASTER_HOST>:8000 \
+  --secret <YOUR_API_SECRET> \
+  --node-id node-worker-01
+```
 
-### Dashboard Views & Components
-1. **Cluster Overview Bar:**
-   - Active Slaves (Online/Offline badges, Host IP, Tags).
-   - Cluster-wide Container Counts (Running, Stopped, Crash-Looping).
-   - Active Alerts Summary (Critical, Error, Warn).
-2. **Container Telemetry Fleet Grid:**
-   - Card/Table view of containers across local and remote nodes.
-   - Real-time CPU% and Memory% progress bars (dynamic amber warning at >80%, red pulse at >90%).
-   - One-click Quick Actions: Restart, Stop, Start, Stream Logs, Trigger Auto-Heal.
-3. **Live Log Stream & LLM Diagnostic Console:**
-   - Terminal-style streaming log viewer.
-   - AI Analysis Card: Displays Severity Badge, Detected Root Cause, Suggested Remediation, and Auto-Heal Trigger status.
-4. **Incident & Backoff Command Center:**
-   - Active Crash Loops panel displaying restart counts, backoff delay timer, and circuit-breaker status.
-   - One-click "Reset Circuit Breaker" and "Acknowledge Alert" buttons.
-5. **Fleet Command Dispatch Modal:**
-   - Interface to dispatch actions (`restart`, `stop`, `exec`, `log_check`) across multiple slave nodes simultaneously with aggregate response badges.
+The Go agent connects, handshakes with the Master, and appears in the Web Console within 3 seconds.
+
+> 📖 **Need step-by-step production instructions?**  
+> Check the comprehensive [Production Deployment & Operations Guide](DEPLOYMENT_GUIDE.md) for Podman rootless setup, Kubernetes DaemonSet deployment, backup routines, and firewall rules.
+
+---
+
+## 🖥️ Real-Time React Web Console
+
+DockerMind features a dark-themed DevOps web console built with **React 18**, **Vite**, **Tailwind CSS**, and **Lucide Icons**:
+
+### 1. Fleet & Containers
+- Real-time CPU% and True RSS Memory% progress bars (dynamic amber warning at >80%, pulsing red alert at >90%).
+- Real-time container state badges (`running`, `exited`, `paused`, `restarting`).
+- One-click container actions: **Restart**, **Start**, **Stop**, **Stream Logs**, and **Trigger AI Analysis**.
+
+### 2. Incidents & Alerts
+- Real-time timeline of detected crashes, OOM events, and log anomalies.
+- AI Root-Cause Diagnostic Cards: Explains the exact failure mechanism, severity rating, and recommended solution.
+- One-click alert acknowledgment and incident resolution.
+
+### 3. Fleet Command Dispatch
+- Multi-host command orchestrator allowing operators to execute maintenance actions (`restart`, `stop`, `exec`, `log_check`) across multiple or all slave nodes simultaneously.
+
+### 4. Metrics & Prometheus
+- Cluster overview gauges: Active Nodes, Healthy vs. Crashing Containers, Memory Utilization, and Active Incidents.
+- Direct links to Prometheus `/metrics` and Grafana dashboard templates.
+
+### 5. Users & RBAC Management
+- Administrator-only user directory.
+- Create new users, assign granular roles (`admin`, `operator`, `viewer`), reset passwords, and revoke access with persistent SQLite backing.
+
+### 6. Integrations & Settings Vault
+- **Zero-Downtime AI Key Rotation:** Switch between Google Gemini, OpenRouter, and Ollama and rotate API keys without container restarts.
+- **Multi-Channel Notification Center:** Configure Slack incoming webhooks, Discord channels, and corporate SMTP/Gmail relays with instant diagnostic test pings.
+
+---
+
+## 📊 Prometheus & Grafana Monitoring
+
+DockerMind includes a native Prometheus exporter serving metrics in standard exposition format (`text/plain; version=0.0.4`):
+
+- **Endpoint:** `http://<MASTER_IP>:8000/metrics`
+- **Dashboard Template:** [`monitoring/grafana/dockermind-dashboard.json`](monitoring/grafana/dockermind-dashboard.json)
+- **Scraper Config:** [`monitoring/prometheus/prometheus.yml`](monitoring/prometheus/prometheus.yml)
+
+### Key Metrics Exported:
+| Metric Name | Type | Description |
+| :--- | :---: | :--- |
+| `dockermind_up` | Gauge | Master service operational status (1 = healthy). |
+| `dockermind_slaves_total{status}` | Gauge | Total registered edge slaves (`online` vs `offline`). |
+| `dockermind_containers_total{node, status}` | Gauge | Total containers by status (`running`, `exited`, `paused`). |
+| `dockermind_container_memory_rss_bytes{node, container}` | Gauge | **True RSS memory** consumption (inactive page cache subtracted). |
+| `dockermind_container_cpu_usage_pct{node, container}` | Gauge | Real-time container CPU utilization percentage. |
+| `dockermind_crashloop_active{node, container}` | Gauge | Active crash loop indicator (1 = crashing, 0 = stable). |
+| `dockermind_circuit_breaker_active{node, container}` | Gauge | Circuit breaker status halting restart thrashing. |
+| `dockermind_healing_actions_total{action, status}` | Counter | Cumulative automated healing actions executed. |
+| `dockermind_alerts_active_total{severity}` | Gauge | Active alerts grouped by severity (`critical`, `error`, `warn`). |
+
+---
+
+## ☸️ Multi-Runtime Support (Docker, Podman, Kubernetes)
+
+| Runtime | Deployment Method | Capabilities | Status |
+| :--- | :--- | :--- | :---: |
+| **Docker Engine** | Standard container / `install.sh` | Full lifecycle event watching, log streaming, and container self-healing. | `Production Ready` |
+| **Docker Swarm** | Swarm manager overlay | Service discovery, task-level health monitoring, multi-node dispatch. | `Supported` |
+| **Podman** | System or Rootless user socket | Auto-detects `/run/podman/podman.sock` & rootless user sockets. | `Supported` |
+| **Kubernetes** | Light Agent `DaemonSet` | Kubelet/CRI socket monitoring, `CrashLoopBackOff` & `OOMKilled` pod watcher. | `Active Phase 3` |
+
+---
+
+## 🔌 API Endpoints Reference
+
+### Authentication & Users (`/auth`)
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/auth/login` | Public | Authenticates credentials and returns JWT bearer token. |
+| `GET` | `/auth/users` | Admin | Lists all user accounts and assigned roles. |
+| `POST` | `/auth/users` | Admin | Creates a new user account with bcrypt hashing. |
+| `PUT` | `/auth/users/{username}` | Admin | Updates user role or resets password. |
+| `DELETE`| `/auth/users/{username}` | Admin | Removes a user account (safeguarded against root admin deletion). |
+
+### Distributed Slave Fleet (`/slaves`)
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/slaves` | Viewer+ | Lists all registered slave nodes with health status and tags. |
+| `POST` | `/slaves/register` | Agent | Registers a new slave node with cluster secret. |
+| `POST` | `/slaves/heartbeat` | Agent | Ingests periodic slave heartbeat and node metrics. |
+| `POST` | `/slaves/logs` | Agent | Streams container log lines into the async AI triage pipeline. |
+| `POST` | `/slaves/events` | Agent | Ingests container `die`, `oom`, and `health_status` events. |
+| `GET` | `/slaves/crash-loops` | Viewer+ | Lists containers currently in active crash loops. |
+| `POST` | `/slaves/dispatch` | Operator+ | Dispatches fleet commands across targeted or all nodes. |
+| `POST` | `/slaves/circuit-breaker/reset` | Operator+ | Resets backoff counter and unblocks circuit breaker. |
+| `DELETE`| `/slaves/{slave_id}` | Admin | Deregisters a decommissioned slave node. |
+
+### Container Management (`/containers`)
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/containers` | Viewer+ | Lists containers across the cluster with live status and True RSS. |
+| `GET` | `/containers/{name}/logs` | Viewer+ | Retrieves recent container log lines. |
+| `POST` | `/containers/{name}/restart` | Operator+ | Restarts a container on the local node. |
+| `POST` | `/containers/{name}/start` | Operator+ | Starts a stopped container. |
+| `POST` | `/containers/{name}/stop` | Operator+ | Stops a running container. |
+| `POST` | `/containers/exec` | Admin | Executes a remote command inside a container. |
+
+### AI SRE Engine & Auto-Healing (`/heal`, `/chat`, `/logs`)
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/logs/{container_name}/analyze` | Operator+ | Manually triggers AI root-cause analysis on recent logs. |
+| `POST` | `/heal` | Operator+ | Executes AI log analysis and triggers automated remediation. |
+| `POST` | `/chat` | Viewer+ | Conversational AI DevOps assistant query. |
+
+### Incidents & Alerts (`/alerts`)
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/alerts` | Viewer+ | Lists incident alerts with filter by severity and container. |
+| `GET` | `/alerts/unhealed` | Viewer+ | Returns active unhealed incidents. |
+| `GET` | `/alerts/crash-summary` | Viewer+ | Summarizes active crash loops and alert counts. |
+| `POST` | `/alerts/{id}/acknowledge` | Operator+ | Acknowledges and silences an active alert. |
+
+### Zero-Downtime Settings Vault (`/settings`)
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/settings` | Admin | Returns current configuration with masked secrets. |
+| `PUT` | `/settings/ai` | Admin | Hot-reloads AI provider (`gemini`, `openrouter`, `ollama`) and API keys. |
+| `POST` | `/settings/ai/test` | Admin | Tests AI connectivity and response latency. |
+| `PUT` | `/settings/notifications` | Admin | Updates Slack, Discord, and SMTP email settings. |
+| `POST` | `/settings/notifications/test` | Admin | Sends diagnostic test alert to all configured channels. |
+
+### Observability & Streaming (`/metrics` & `/ws`)
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/metrics` | Public | Standard Prometheus metric exposition scraper endpoint. |
+| `WS` | `/ws` | Public/JWT | Real-time WebSocket event feed streaming node status, alerts, and stats. |
+
+---
+
+## 🔒 Security Architecture
+- **Password Protection:** Passwords hashed with standard `bcrypt` before persistence.
+- **Zero-Downtime Secret Masking:** Sensitive keys (`GEMINI_API_KEY`, `JWT_SECRET`, `API_SECRET`) are masked in REST API responses (`AIza...******...YXCg`) and kept in protected SQLite storage.
+- **mTLS Inter-Node Security:** Edge slaves communicate with the Master using mutual TLS certificates generated via `scripts/gen_certs.sh`.
+- **Role-Based Access Control:** Every endpoint is gated by fine-grained permissions (`viewer`, `operator`, `admin`).
+
+---
+
+## 📄 License
+DockerMind is released under the **MIT License**. Feel free to use, modify, and distribute in commercial and private environments.

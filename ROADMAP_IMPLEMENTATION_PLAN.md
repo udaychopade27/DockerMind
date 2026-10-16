@@ -44,7 +44,7 @@ curl -sSL https://raw.githubusercontent.com/<org>/dockermind/main/install.sh | b
   - **User-Defined Admin Password:** Prompt the user interactively:
     - `Enter Admin Password (min 8 chars) [or press Enter to auto-generate]:`
     - Masked input with password confirmation.
-    - If left blank, falls back to high-entropy random password.
+    - If left blank, defaults cleanly to username **admin** and password **admin** (matching the standard Grafana / dev-ops pattern).
   - **Cluster Internal Secrets (Auto-Generated):**
     - High-entropy `JWT_SECRET` (64-char hex via `openssl rand -hex 32`).
     - High-entropy cluster pre-shared `API_SECRET` for mutual slave-master authentication.

@@ -224,15 +224,15 @@ install_master() {
     while true; do
       local p1=""
       local p2=""
-      prompt_read "Enter Admin Password (min 6 chars) [press Enter to auto-generate]: " p1 true
+      prompt_read "Enter Admin Password [press Enter for default 'admin']: " p1 true
       if [ -z "$p1" ]; then
-        admin_password=$(gen_random_secret 16)
-        log_ok "Generated high-entropy admin password: ${BOLD}${admin_password}${NC}"
+        admin_password="admin"
+        log_ok "Default credentials active: ${BOLD}admin / admin${NC} (Same as Grafana default)"
         break
       fi
 
-      if [ ${#p1} -lt 6 ]; then
-        log_err "Password must be at least 6 characters long."
+      if [ ${#p1} -lt 4 ]; then
+        log_err "Password must be at least 4 characters long."
         continue
       fi
 
@@ -243,7 +243,7 @@ install_master() {
       fi
 
       admin_password="$p1"
-      log_ok "Admin password configured."
+      log_ok "Custom admin password configured."
       break
     done
   fi
@@ -367,7 +367,7 @@ EOF
   echo -e "  ${BOLD}Web Dashboard UI:${NC}    ${CYAN}http://${host_ip}:3000${NC} (or http://localhost:3000)"
   echo -e "  ${BOLD}Master REST API:${NC}     ${CYAN}http://${host_ip}:8000${NC}"
   echo -e "  ${BOLD}Admin Username:${NC}      admin"
-  echo -e "  ${BOLD}Admin Password:${NC}      ${BOLD}${admin_password}${NC}"
+  echo -e "  ${BOLD}Admin Password:${NC}      ${BOLD}${admin_password}${NC} (Default: admin)"
   echo -e "  ${BOLD}Active AI Engine:${NC}    ${selected_ai}"
   echo -e "${GREEN}------------------------------------------------------------------------------${NC}"
   echo -e "  ${BOLD}Dynamic Key & Alert Rotation:${NC}"

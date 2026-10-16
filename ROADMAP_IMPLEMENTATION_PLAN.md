@@ -169,6 +169,34 @@ Provide full lifecycle user directory management directly in the Web UI for admi
   - **Edit User Modal:** Change user role on-the-fly and reset credentials.
   - **Delete User Confirmation:** Modal preventing accidental lockout.
 
+
+---
+
+## Phase 5: Dynamic Integrations & Zero-Downtime Settings Vault
+
+### Objective
+Allow administrators to rotate AI API keys, configure Slack/Discord/Email notifications, and change LLM models directly from the Web UI with zero container redeployments and zero cluster downtime.
+
+### Backend Engine (`master/config.py`, `master/llm_client.py`, `master/services/notifier.py`, `master/routers/settings.py`)
+- [x] **5.1 Dynamic In-Memory Config Vault:**
+  - In-memory cache loaded from SQLite `settings` table on startup with `.env` fallback.
+  - Secret masking utility (`AIza...******...YXCg`) preventing visual credential leakage in UI and logs.
+  - Live module-level dynamic attribute interception (`__getattr__`) ensuring zero-restart key rotation.
+- [x] **5.2 Hot-Reloadable AI SRE Engine:**
+  - `PUT /settings/ai`: Instant runtime switching between Google Gemini, OpenRouter, and Local Ollama.
+  - `POST /settings/ai/test`: Real-time diagnostic latency and connectivity testing.
+- [x] **5.3 Multi-Channel Alert Dispatcher & SMTP:**
+  - Full SMTP / Email support with TLS/SSL encryption for Gmail App Passwords and corporate relays.
+  - Slack Incoming Webhook and Discord channel integration.
+  - Diagnostic ping dispatcher (`POST /settings/notifications/test`) with per-channel health status.
+
+### Frontend Web UI (`dashboard/src/App.jsx`)
+- [x] **5.4 Integrations & Vault Dashboard:**
+  - Dedicated **"Integrations & Vault"** tab in sidebar navigation.
+  - AI SRE Engine & Key Rotation card with provider switcher and test connection feedback.
+  - Alert Webhooks & Email Notification card with Slack, Discord, and SMTP inputs.
+  - Immediate toast notifications and zero-downtime hot-reload guarantees.
+
 ## Progressive Rollout Tracker
 
 | Item | Phase | Priority | Deliverable | Status |

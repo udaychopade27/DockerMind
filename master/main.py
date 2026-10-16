@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 import docker_ops
 import llm_client
+import config
 from config import MASTER_HOST, MASTER_PORT, API_SECRET
 from slave_registry import registry
 from database import init_db, audit, db_record_container_metrics, db_record_host_metrics, db_get_container_metrics, db_get_metrics_summary, db_prune_old_metrics
@@ -30,6 +31,7 @@ from routers import logs as logs_router
 from routers import jobs as jobs_router
 from routers import runbooks as runbooks_router
 from routers import auth as auth_router
+from routers import settings as settings_router
 from middleware.redact_filter import install_global_redactor, get_redacted_logging_config
 
 # Install sensitive token redaction across all loggers
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI):
     install_global_redactor()
     print("=== DockerMind Master v0.3.0 starting ===")
     await init_db()
+    await config.load_dynamic_settings()
     await sync_users_from_db()
     await alert_store.load_from_db()
     await runbook_engine.seed_builtins()
@@ -158,6 +161,7 @@ app.include_router(alerts_router.router)
 app.include_router(logs_router.router)
 app.include_router(jobs_router.router)
 app.include_router(runbooks_router.router)
+app.include_router(settings_router.router)
 
 
 # ── Request / response models ─────────────────────────────────────────────────

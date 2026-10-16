@@ -23,6 +23,7 @@ import {
   Radio,
   FileText,
   Sliders,
+  Bell,
   ChevronRight,
   Eye,
   EyeOff,
@@ -673,6 +674,214 @@ export default function App() {
     }
   }, [activeTab, currentUser]);
 
+  // ── Settings & Integrations Vault State ──────────────────────────────
+  const [settingsData, setSettingsData] = useState(null);
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [savingAI, setSavingAI] = useState(false);
+  const [testingAI, setTestingAI] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState(null);
+  const [savingNotif, setSavingNotif] = useState(false);
+  const [testingNotif, setTestingNotif] = useState(false);
+  const [notifTestResult, setNotifTestResult] = useState(null);
+
+  // AI Form State
+  const [aiProvider, setAiProvider] = useState('online');
+  const [geminiKey, setGeminiKey] = useState('');
+  const [geminiModel, setGeminiModel] = useState('gemini-2.5-flash');
+  const [openrouterKey, setOpenrouterKey] = useState('');
+  const [openrouterModel, setOpenrouterModel] = useState('google/gemma-4-26b-a4b-it:free');
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState('http://ollama:11434');
+  const [ollamaModel, setOllamaModel] = useState('qwen2.5-coder:1.5b');
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [showOpenrouterKey, setShowOpenrouterKey] = useState(false);
+
+  // Notifications Form State
+  const [slackUrl, setSlackUrl] = useState('');
+  const [discordUrl, setDiscordUrl] = useState('');
+  const [genericUrl, setGenericUrl] = useState('');
+  const [minSeverity, setMinSeverity] = useState('warn');
+  const [smtpHost, setSmtpHost] = useState('');
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPassword, setSmtpPassword] = useState('');
+  const [smtpFrom, setSmtpFrom] = useState('');
+  const [smtpTo, setSmtpTo] = useState('');
+  const [smtpTls, setSmtpTls] = useState(true);
+  const [showSmtpPassword, setShowSmtpPassword] = useState(false);
+
+  const fetchSettings = async () => {
+    setLoadingSettings(true);
+    try {
+      const res = await fetch(`${API_BASE}/settings`, {
+        headers: {
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSettingsData(data);
+        if (data.ai) {
+          setAiProvider(data.ai.provider || 'online');
+          setGeminiModel(data.ai.gemini_model || 'gemini-2.5-flash');
+          setOpenrouterModel(data.ai.openrouter_model || 'google/gemma-4-26b-a4b-it:free');
+          setOllamaBaseUrl(data.ai.ollama_base_url || 'http://ollama:11434');
+          setOllamaModel(data.ai.ollama_model || 'qwen2.5-coder:1.5b');
+        }
+        if (data.notifications) {
+          setSlackUrl(data.notifications.slack_webhook_url || '');
+          setDiscordUrl(data.notifications.discord_webhook_url || '');
+          setGenericUrl(data.notifications.generic_webhook_url || '');
+          setMinSeverity(data.notifications.min_severity || 'warn');
+          setSmtpHost(data.notifications.smtp_host || '');
+          setSmtpPort(data.notifications.smtp_port || 587);
+          setSmtpUser(data.notifications.smtp_user || '');
+          setSmtpFrom(data.notifications.smtp_from || '');
+          setSmtpTo(data.notifications.smtp_to || '');
+          setSmtpTls(data.notifications.smtp_tls ?? true);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load settings:', err);
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  const handleSaveAI = async (e) => {
+    if (e) e.preventDefault();
+    setSavingAI(true);
+    setAiTestResult(null);
+    try {
+      const payload = {
+        provider: aiProvider,
+        gemini_model: geminiModel,
+        openrouter_model: openrouterModel,
+        ollama_base_url: ollamaBaseUrl,
+        ollama_model: ollamaModel,
+      };
+      if (geminiKey.trim()) payload.gemini_api_key = geminiKey.trim();
+      if (openrouterKey.trim()) payload.openrouter_api_key = openrouterKey.trim();
+
+      const res = await fetch(`${API_BASE}/settings/ai`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        addToast('ok', 'AI Config Saved', 'AI provider settings updated & hot-reloaded with zero downtime.');
+        setGeminiKey('');
+        setOpenrouterKey('');
+        fetchSettings();
+      } else {
+        addToast('error', 'Update Failed', data.detail || 'Could not save AI settings.');
+      }
+    } catch (err) {
+      addToast('error', 'Connection Error', 'Failed to reach backend.');
+    } finally {
+      setSavingAI(false);
+    }
+  };
+
+  const handleTestAI = async () => {
+    setTestingAI(true);
+    setAiTestResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/settings/ai/test`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        }
+      });
+      const data = await res.json();
+      setAiTestResult(data);
+      if (data.status === 'ok') {
+        addToast('ok', 'AI Connection Verified', `Response received from ${data.model} in ${data.latency_ms}ms.`);
+      } else {
+        addToast('error', 'AI Test Failed', data.error || 'Connection failed.');
+      }
+    } catch (err) {
+      setAiTestResult({ status: 'error', error: 'Failed to communicate with master API.' });
+      addToast('error', 'Test Failed', 'Could not test AI provider.');
+    } finally {
+      setTestingAI(false);
+    }
+  };
+
+  const handleSaveNotifications = async (e) => {
+    if (e) e.preventDefault();
+    setSavingNotif(true);
+    setNotifTestResult(null);
+    try {
+      const payload = {
+        slack_webhook_url: slackUrl.trim(),
+        discord_webhook_url: discordUrl.trim(),
+        generic_webhook_url: genericUrl.trim(),
+        min_severity: minSeverity,
+        smtp_host: smtpHost.trim(),
+        smtp_port: parseInt(smtpPort) || 587,
+        smtp_user: smtpUser.trim(),
+        smtp_from: smtpFrom.trim(),
+        smtp_to: smtpTo.trim(),
+        smtp_tls: smtpTls
+      };
+      if (smtpPassword.trim()) payload.smtp_password = smtpPassword.trim();
+
+      const res = await fetch(`${API_BASE}/settings/notifications`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        addToast('ok', 'Alert Channels Saved', 'Notification webhooks & SMTP saved into persistent vault.');
+        setSmtpPassword('');
+        fetchSettings();
+      } else {
+        addToast('error', 'Save Failed', data.detail || 'Could not save notifications.');
+      }
+    } catch (err) {
+      addToast('error', 'Connection Error', 'Failed to reach backend.');
+    } finally {
+      setSavingNotif(false);
+    }
+  };
+
+  const handleTestNotifications = async (channel = 'all') => {
+    setTestingNotif(true);
+    setNotifTestResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/settings/notifications/test`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token || localStorage.getItem('dockermind_token')}`
+        },
+        body: JSON.stringify({ channel })
+      });
+      const data = await res.json();
+      setNotifTestResult(data);
+      addToast('info', 'Diagnostic Dispatched', 'Test alert sent. Check channel status below.');
+    } catch (err) {
+      addToast('error', 'Test Failed', 'Could not dispatch test notifications.');
+    } finally {
+      setTestingNotif(false);
+    }
+  };
+
+
+  useEffect(() => {
+    if (activeTab === 'settings' && currentUser?.role === 'admin') {
+      fetchSettings();
+    }
+  }, [activeTab, currentUser]);
+
   // Toast Notifications
   const [toasts, setToasts] = useState([]);
 
@@ -1255,6 +1464,12 @@ export default function App() {
             <div className={`nav-item ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}>
               <Users size={18} />
               <span>Users & RBAC</span>
+            </div>
+          )}
+          {currentUser?.role === 'admin' && (
+            <div className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
+              <Sliders size={18} />
+              <span>Integrations & Vault</span>
             </div>
           )}
         </nav>
@@ -2397,6 +2612,458 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* ── TAB 8: DYNAMIC INTEGRATIONS & CONFIG VAULT ── */}
+          {activeTab === 'settings' && currentUser?.role === 'admin' && (
+            <div>
+              {/* Top Banner */}
+              <div className="card-glass mb-6" style={{ background: 'linear-gradient(135deg, rgba(15,23,42,0.9) 0%, rgba(30,41,59,0.8) 100%)', border: '1px solid rgba(56,189,248,0.25)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                  <div>
+                    <h2 className="text-xl font-bold flex items-center gap-2 text-slate-100">
+                      <Sliders size={22} className="text-cyan" /> Dynamic Integrations & Settings Vault
+                    </h2>
+                    <p className="text-xs text-muted mt-1">
+                      Hot-reload AI engine API keys, notification webhooks, and email channels on the fly with <span className="text-cyan font-bold">zero container restarts</span>.
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                    <span className="badge badge-ok flex items-center gap-1.5 py-1 px-3">
+                      <CheckCircle2 size={13} /> Zero-Downtime Hot Reload Active
+                    </span>
+                    <button className="btn btn-secondary btn-sm flex items-center gap-1.5" onClick={fetchSettings} disabled={loadingSettings}>
+                      <RefreshCw size={13} className={loadingSettings ? 'animate-spin' : ''} /> Refresh
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Two Column Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(460px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
+
+                {/* ── CARD 1: AI INTELLIGENCE ENGINE & KEY ROTATION ── */}
+                <div className="card-glass" style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', borderBottom: '1px solid #334155', paddingBottom: '0.75rem' }}>
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded" style={{ background: 'rgba(56,189,248,0.1)' }}>
+                        <Sparkles size={18} className="text-cyan" />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-semibold text-slate-100">AI SRE Engine & Key Rotation</h3>
+                        <p className="text-xs text-muted">Rotate LLM credentials or switch provider instantly</p>
+                      </div>
+                    </div>
+                    {settingsData?.ai?.gemini_configured || settingsData?.ai?.openrouter_configured ? (
+                      <span className="badge badge-ok">KEYS ACTIVE</span>
+                    ) : (
+                      <span className="badge badge-warn">LOCAL / UNCONFIGURED</span>
+                    )}
+                  </div>
+
+                  <form onSubmit={handleSaveAI} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1 }}>
+                    {/* Active Provider Selector */}
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1.5">Active AI Provider</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem' }}>
+                        {[
+                          { id: 'online', label: 'Online (Auto Fallback)', desc: 'Gemini primary → OpenRouter fallback' },
+                          { id: 'gemini', label: 'Google Gemini', desc: 'Google AI Studio (Gemini 2.5 Flash)' },
+                          { id: 'openrouter', label: 'OpenRouter', desc: 'Multi-model aggregator' },
+                          { id: 'local', label: 'Local Ollama', desc: 'Fully air-gapped on master host' }
+                        ].map(p => (
+                          <div
+                            key={p.id}
+                            onClick={() => setAiProvider(p.id)}
+                            style={{
+                              padding: '0.6rem 0.75rem',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              border: aiProvider === p.id ? '1px solid #38bdf8' : '1px solid #334155',
+                              background: aiProvider === p.id ? 'rgba(56,189,248,0.12)' : 'rgba(15,23,42,0.5)',
+                              transition: 'all 0.15s ease'
+                            }}
+                          >
+                            <div className="text-xs font-bold" style={{ color: aiProvider === p.id ? '#38bdf8' : '#e2e8f0' }}>{p.label}</div>
+                            <div className="text-[10px] text-muted">{p.desc}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Google Gemini Credentials */}
+                    <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.4)', border: '1px solid #334155' }}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          Google Gemini API Key
+                          {settingsData?.ai?.gemini_configured && (
+                            <span className="text-[10px] text-emerald font-mono">({settingsData.ai.gemini_key_masked})</span>
+                          )}
+                        </span>
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-[11px] text-cyan hover:underline flex items-center gap-1">
+                          Get Free Key ↗
+                        </a>
+                      </div>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type={showGeminiKey ? 'text' : 'password'}
+                          className="input-field font-mono text-xs pr-10"
+                          placeholder={settingsData?.ai?.gemini_configured ? '•••••••••••••••• (Leave blank to keep existing)' : 'Paste AIzaSy... key'}
+                          value={geminiKey}
+                          onChange={(e) => setGeminiKey(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="absolute right-2 top-2 text-muted hover:text-slate-200"
+                          onClick={() => setShowGeminiKey(!showGeminiKey)}
+                        >
+                          {showGeminiKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                      <div className="mt-2">
+                        <label className="text-[11px] text-muted block mb-1">Gemini Model</label>
+                        <input
+                          type="text"
+                          className="input-field font-mono text-xs"
+                          value={geminiModel}
+                          onChange={(e) => setGeminiModel(e.target.value)}
+                          placeholder="gemini-2.5-flash"
+                        />
+                      </div>
+                    </div>
+
+                    {/* OpenRouter Credentials */}
+                    <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.4)', border: '1px solid #334155' }}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          OpenRouter API Key (Fallback / Multi-Model)
+                          {settingsData?.ai?.openrouter_configured && (
+                            <span className="text-[10px] text-emerald font-mono">({settingsData.ai.openrouter_key_masked})</span>
+                          )}
+                        </span>
+                        <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-[11px] text-cyan hover:underline">
+                          Get Key ↗
+                        </a>
+                      </div>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type={showOpenrouterKey ? 'text' : 'password'}
+                          className="input-field font-mono text-xs pr-10"
+                          placeholder={settingsData?.ai?.openrouter_configured ? '•••••••••••••••• (Leave blank to keep existing)' : 'Paste sk-or-... key'}
+                          value={openrouterKey}
+                          onChange={(e) => setOpenrouterKey(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="absolute right-2 top-2 text-muted hover:text-slate-200"
+                          onClick={() => setShowOpenrouterKey(!showOpenrouterKey)}
+                        >
+                          {showOpenrouterKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                      <div className="mt-2">
+                        <label className="text-[11px] text-muted block mb-1">OpenRouter Model</label>
+                        <input
+                          type="text"
+                          className="input-field font-mono text-xs"
+                          value={openrouterModel}
+                          onChange={(e) => setOpenrouterModel(e.target.value)}
+                          placeholder="google/gemma-4-26b-a4b-it:free"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Local Ollama Settings */}
+                    <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.4)', border: '1px solid #334155' }}>
+                      <span className="text-xs font-bold text-slate-200 block mb-2">Local Ollama (Offline / Air-Gapped)</span>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                        <div>
+                          <label className="text-[11px] text-muted block mb-1">Base URL</label>
+                          <input
+                            type="text"
+                            className="input-field font-mono text-xs"
+                            value={ollamaBaseUrl}
+                            onChange={(e) => setOllamaBaseUrl(e.target.value)}
+                            placeholder="http://ollama:11434"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-muted block mb-1">Ollama Model</label>
+                          <input
+                            type="text"
+                            className="input-field font-mono text-xs"
+                            value={ollamaModel}
+                            onChange={(e) => setOllamaModel(e.target.value)}
+                            placeholder="qwen2.5-coder:1.5b"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* AI Diagnostic Output Banner */}
+                    {aiTestResult && (
+                      <div
+                        className="p-2.5 rounded text-xs"
+                        style={{
+                          background: aiTestResult.status === 'ok' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
+                          border: `1px solid ${aiTestResult.status === 'ok' ? '#10b981' : '#ef4444'}`
+                        }}
+                      >
+                        {aiTestResult.status === 'ok' ? (
+                          <div className="flex items-center justify-between">
+                            <span className="text-emerald font-semibold flex items-center gap-1.5">
+                              <CheckCircle2 size={14} /> Provider Verified ({aiTestResult.model})
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-300">Latency: {aiTestResult.latency_ms}ms</span>
+                          </div>
+                        ) : (
+                          <div className="text-rose-400">
+                            <strong>Diagnostic Error:</strong> {aiTestResult.error}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Submit & Test Buttons */}
+                    <div style={{ display: 'flex', gap: '0.75rem', marginTop: 'auto', paddingTop: '0.75rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm flex-1 flex items-center justify-center gap-1.5"
+                        onClick={handleTestAI}
+                        disabled={testingAI}
+                      >
+                        <Zap size={14} className={testingAI ? 'animate-pulse text-amber' : 'text-amber'} />
+                        {testingAI ? 'Pinging Provider...' : 'Test AI Connection'}
+                      </button>
+                      <button
+                        type="submit"
+                        className="btn btn-primary btn-sm flex-1 flex items-center justify-center gap-1.5"
+                        disabled={savingAI}
+                      >
+                        <CheckCircle2 size={14} />
+                        {savingAI ? 'Saving to Vault...' : 'Save AI Configuration'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+
+                {/* ── CARD 2: ALERT NOTIFICATION CHANNELS & WEBHOOKS ── */}
+                <div className="card-glass" style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', borderBottom: '1px solid #334155', paddingBottom: '0.75rem' }}>
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded" style={{ background: 'rgba(245,158,11,0.1)' }}>
+                        <Bell size={18} className="text-amber" />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-semibold text-slate-100">Alert Webhooks & Email Notification</h3>
+                        <p className="text-xs text-muted">Dispatch crash alerts to Slack, Discord, and Gmail</p>
+                      </div>
+                    </div>
+                    <span className="badge badge-ok">CHANNELS READY</span>
+                  </div>
+
+                  <form onSubmit={handleSaveNotifications} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1 }}>
+                    {/* Minimum Severity Selector */}
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300 block mb-1">Minimum Alert Threshold</label>
+                      <select
+                        className="input-field text-xs"
+                        value={minSeverity}
+                        onChange={(e) => setMinSeverity(e.target.value)}
+                      >
+                        <option value="warn">WARN (Crash loops, high memory, restarts, critical errors)</option>
+                        <option value="error">ERROR (Failures and crash incidents only)</option>
+                        <option value="critical">CRITICAL (System outages and severe unrecoverable incidents only)</option>
+                      </select>
+                    </div>
+
+                    {/* Slack Webhook */}
+                    <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.4)', border: '1px solid #334155' }}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          Slack Incoming Webhook
+                          {settingsData?.notifications?.slack_configured && (
+                            <span className="text-[10px] text-emerald font-mono">({settingsData.notifications.slack_webhook_url_masked})</span>
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          className="text-[11px] text-cyan hover:underline"
+                          onClick={() => handleTestNotifications('slack')}
+                          disabled={testingNotif}
+                        >
+                          Ping Slack ↗
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        className="input-field font-mono text-xs"
+                        placeholder="https://hooks.slack.com/services/T00/B00/XXXX"
+                        value={slackUrl}
+                        onChange={(e) => setSlackUrl(e.target.value)}
+                      />
+                    </div>
+
+                    {/* Discord Webhook */}
+                    <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.4)', border: '1px solid #334155' }}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          Discord Channel Webhook
+                          {settingsData?.notifications?.discord_configured && (
+                            <span className="text-[10px] text-emerald font-mono">({settingsData.notifications.discord_webhook_url_masked})</span>
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          className="text-[11px] text-cyan hover:underline"
+                          onClick={() => handleTestNotifications('discord')}
+                          disabled={testingNotif}
+                        >
+                          Ping Discord ↗
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        className="input-field font-mono text-xs"
+                        placeholder="https://discord.com/api/webhooks/1234/XXXX"
+                        value={discordUrl}
+                        onChange={(e) => setDiscordUrl(e.target.value)}
+                      />
+                    </div>
+
+                    {/* Email / SMTP Alert Channel */}
+                    <div className="p-3 rounded" style={{ background: 'rgba(15,23,42,0.4)', border: '1px solid #334155' }}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          Email / SMTP Alerts (Gmail App Password / Corporate Relay)
+                        </span>
+                        <button
+                          type="button"
+                          className="text-[11px] text-cyan hover:underline"
+                          onClick={() => handleTestNotifications('email')}
+                          disabled={testingNotif}
+                        >
+                          Test Email ↗
+                        </button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                        <div>
+                          <label className="text-[11px] text-muted block mb-1">SMTP Host</label>
+                          <input
+                            type="text"
+                            className="input-field font-mono text-xs"
+                            placeholder="smtp.gmail.com"
+                            value={smtpHost}
+                            onChange={(e) => setSmtpHost(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-muted block mb-1">Port</label>
+                          <input
+                            type="number"
+                            className="input-field font-mono text-xs"
+                            value={smtpPort}
+                            onChange={(e) => setSmtpPort(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                        <div>
+                          <label className="text-[11px] text-muted block mb-1">SMTP Username / Gmail</label>
+                          <input
+                            type="text"
+                            className="input-field font-mono text-xs"
+                            placeholder="sre@yourcompany.com"
+                            value={smtpUser}
+                            onChange={(e) => setSmtpUser(e.target.value)}
+                          />
+                        </div>
+                        <div style={{ position: 'relative' }}>
+                          <label className="text-[11px] text-muted block mb-1">App Password</label>
+                          <input
+                            type={showSmtpPassword ? 'text' : 'password'}
+                            className="input-field font-mono text-xs pr-8"
+                            placeholder={settingsData?.notifications?.smtp_configured ? '••••••••' : 'App Password'}
+                            value={smtpPassword}
+                            onChange={(e) => setSmtpPassword(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className="absolute right-2 top-7 text-muted hover:text-slate-200"
+                            onClick={() => setShowSmtpPassword(!showSmtpPassword)}
+                          >
+                            {showSmtpPassword ? <EyeOff size={13} /> : <Eye size={13} />}
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                        <div>
+                          <label className="text-[11px] text-muted block mb-1">Alert Recipient (To Email)</label>
+                          <input
+                            type="email"
+                            className="input-field font-mono text-xs"
+                            placeholder="oncall-sre@company.com"
+                            value={smtpTo}
+                            onChange={(e) => setSmtpTo(e.target.value)}
+                          />
+                        </div>
+                        <div className="flex items-center gap-2 pt-5">
+                          <input
+                            type="checkbox"
+                            id="smtpTlsCheck"
+                            checked={smtpTls}
+                            onChange={(e) => setSmtpTls(e.target.checked)}
+                          />
+                          <label htmlFor="smtpTlsCheck" className="text-xs text-slate-300 cursor-pointer">
+                            Enable TLS Encryption
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Notification Test Result Banner */}
+                    {notifTestResult && (
+                      <div className="p-2.5 rounded text-xs" style={{ background: 'rgba(30,41,59,0.7)', border: '1px solid #475569' }}>
+                        <div className="font-semibold text-slate-200 mb-1">Diagnostic Dispatch Summary:</div>
+                        <div className="font-mono text-[11px] text-muted">
+                          {Object.entries(notifTestResult.results || {}).map(([ch, st]) => (
+                            <div key={ch} className="flex justify-between py-0.5">
+                              <span className="capitalize">{ch}:</span>
+                              <span style={{ color: st === 'sent' ? '#10b981' : st === 'not_configured' ? '#64748b' : '#f43f5e' }}>
+                                {st}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Action Buttons */}
+                    <div style={{ display: 'flex', gap: '0.75rem', marginTop: 'auto', paddingTop: '0.75rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm flex-1 flex items-center justify-center gap-1.5"
+                        onClick={() => handleTestNotifications('all')}
+                        disabled={testingNotif}
+                      >
+                        <Send size={14} className={testingNotif ? 'animate-pulse text-cyan' : ''} />
+                        {testingNotif ? 'Sending Test Alerts...' : 'Ping All Channels'}
+                      </button>
+                      <button
+                        type="submit"
+                        className="btn btn-primary btn-sm flex-1 flex items-center justify-center gap-1.5"
+                        disabled={savingNotif}
+                      >
+                        <CheckCircle2 size={14} />
+                        {savingNotif ? 'Saving...' : 'Save Alert Channels'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          )}
+
         </main>
       </div>
 

@@ -1,26 +1,27 @@
 """
 llm_client.py — Multi-provider LLM client for DockerMind
 ---------------------------------------------------------
-Provider selection via LLM_PROVIDER env var:
+Provider selection via LLM_PROVIDER dynamic setting / env var:
   "local"      → Ollama only
   "online"     → Gemini first → OpenRouter fallback on quota/error
   "gemini"     → Gemini only
   "openrouter" → OpenRouter only
 
-Public API (unchanged):
-  chat(user_message, context="") -> str
-  analyze_logs(container_name, logs) -> dict
-  check_ollama_health() -> bool         # kept for /health endpoint compat
-  ensure_model_loaded() -> bool         # kept for startup compat
+Supports Zero-Downtime Hot Reloading: API keys and models are dynamically
+fetched from SQLite/memory without requiring container restarts.
 """
 
 import httpx
 import json
+import config
 from config import (
-    LLM_PROVIDER,
-    OLLAMA_BASE_URL, LLM_MODEL,
-    GEMINI_API_KEY, GEMINI_MODEL,
-    OPENROUTER_API_KEY, OPENROUTER_MODEL,
+    get_llm_provider,
+    get_ollama_base_url,
+    get_ollama_model,
+    get_gemini_api_key,
+    get_gemini_model,
+    get_openrouter_api_key,
+    get_openrouter_model,
 )
 
 
@@ -52,17 +53,20 @@ _GEMINI_QUOTA_ERRORS = (
 
 async def ensure_model_loaded() -> bool:
     """Warm up Ollama model during startup. No-op when using cloud providers."""
-    if LLM_PROVIDER != "local":
-        print(f"[LLM] Provider={LLM_PROVIDER} — skipping Ollama model preload")
+    provider = get_llm_provider()
+    if provider != "local":
+        print(f"[LLM] Provider={provider} — skipping Ollama model preload")
         return True
+    model = get_ollama_model()
+    base_url = get_ollama_base_url()
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={"model": LLM_MODEL, "prompt": "ready", "stream": False},
+                f"{base_url}/api/generate",
+                json={"model": model, "prompt": "ready", "stream": False},
             )
             resp.raise_for_status()
-            print(f"[LLM] Ollama model loaded: {LLM_MODEL}")
+            print(f"[LLM] Ollama model loaded: {model}")
             return True
     except Exception as e:
         print(f"[LLM] Ollama model preload failed: {e}")
@@ -75,30 +79,36 @@ async def check_ollama_health() -> bool:
     - local  → ping Ollama
     - online/gemini/openrouter → return True if API key is configured
     """
-    if LLM_PROVIDER == "local":
+    provider = get_llm_provider()
+    gemini_key = get_gemini_api_key()
+    openrouter_key = get_openrouter_api_key()
+    base_url = get_ollama_base_url()
+    model = get_ollama_model()
+
+    if provider == "local":
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+                r = await client.get(f"{base_url}/api/tags")
                 r.raise_for_status()
                 models = r.json().get("models", [])
                 available = [m["name"] for m in models]
-                ok = any(LLM_MODEL in m for m in available)
+                ok = any(model in m for m in available)
                 if not ok:
-                    print(f"[LLM] Ollama missing model: {LLM_MODEL}")
+                    print(f"[LLM] Ollama missing model: {model}")
                 return ok
         except Exception as e:
             print(f"[LLM] Ollama health failed: {e}")
             return False
 
     # Cloud providers: healthy if at least one key is configured
-    if LLM_PROVIDER in ("online", "gemini") and GEMINI_API_KEY:
+    if provider in ("online", "gemini") and gemini_key:
         return True
-    if LLM_PROVIDER in ("online", "openrouter") and OPENROUTER_API_KEY:
+    if provider in ("online", "openrouter") and openrouter_key:
         return True
-    if LLM_PROVIDER == "gemini" and not GEMINI_API_KEY:
+    if provider == "gemini" and not gemini_key:
         print("[LLM] GEMINI_API_KEY not set!")
         return False
-    if LLM_PROVIDER == "openrouter" and not OPENROUTER_API_KEY:
+    if provider == "openrouter" and not openrouter_key:
         print("[LLM] OPENROUTER_API_KEY not set!")
         return False
     return False
@@ -108,15 +118,18 @@ async def check_ollama_health() -> bool:
 
 async def _chat_ollama(user_message: str, context: str = "") -> str:
     """Call local Ollama instance."""
+    base_url = get_ollama_base_url()
+    model = get_ollama_model()
+
     if not await check_ollama_health():
-        raise RuntimeError(f"Ollama unavailable (model={LLM_MODEL})")
+        raise RuntimeError(f"Ollama unavailable at {base_url} (model={model})")
 
     content = (
         f"Context:\n{context}\n\nQuestion:\n{user_message}"
         if context else user_message
     )
     payload = {
-        "model": LLM_MODEL,
+        "model": model,
         "messages": [{"role": "user", "content": content}],
         "system": SYSTEM_PROMPT,
         "stream": False,
@@ -125,11 +138,11 @@ async def _chat_ollama(user_message: str, context: str = "") -> str:
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            r = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
+            r = await client.post(f"{base_url}/api/chat", json=payload)
             r.raise_for_status()
             return r.json().get("message", {}).get("content", "No response")
     except httpx.ConnectError:
-        raise RuntimeError(f"Cannot connect to Ollama at {OLLAMA_BASE_URL}")
+        raise RuntimeError(f"Cannot connect to Ollama at {base_url}")
     except httpx.TimeoutException:
         raise RuntimeError("Ollama timeout")
     except Exception as e:
@@ -138,7 +151,10 @@ async def _chat_ollama(user_message: str, context: str = "") -> str:
 
 async def _chat_gemini(user_message: str, context: str = "") -> str:
     """Call Google Gemini via REST API with high token limit and reasoning budget."""
-    if not GEMINI_API_KEY:
+    gemini_key = get_gemini_api_key()
+    gemini_model = get_gemini_model()
+
+    if not gemini_key:
         raise RuntimeError("GEMINI_API_KEY is not set")
 
     if context:
@@ -148,7 +164,7 @@ async def _chat_gemini(user_message: str, context: str = "") -> str:
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        f"{gemini_model}:generateContent?key={gemini_key}"
     )
     payload = {
         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -193,7 +209,10 @@ OPENROUTER_CANDIDATE_MODELS = [
 
 async def _chat_openrouter(user_message: str, context: str = "") -> str:
     """Call OpenRouter with multi-model auto-fallback across verified free models."""
-    if not OPENROUTER_API_KEY:
+    openrouter_key = get_openrouter_api_key()
+    openrouter_model = get_openrouter_model()
+
+    if not openrouter_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
 
     content = (
@@ -202,60 +221,59 @@ async def _chat_openrouter(user_message: str, context: str = "") -> str:
     )
 
     # Candidate models: user-specified model first, followed by active free models
-    models_to_try = [OPENROUTER_MODEL]
+    models_to_try = [openrouter_model]
     for m in OPENROUTER_CANDIDATE_MODELS:
         if m not in models_to_try:
             models_to_try.append(m)
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {openrouter_key}",
         "HTTP-Referer":  "https://github.com/dockermind",
         "X-Title":       "DockerMind",
         "Content-Type":  "application/json",
     }
 
-    last_error = None
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        for model in models_to_try:
-            print(f"[LLM] Dispatching prompt to OpenRouter (model: {model})...")
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": content},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 4096,
-            }
-            try:
+    last_error = ""
+    for model in models_to_try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": content},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 4096,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
                 r = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
-                    json=payload,
                     headers=headers,
+                    json=payload,
                 )
+
                 if r.status_code == 200:
                     data = r.json()
-                    ans = data["choices"][0]["message"]["content"]
-                    print(f"[LLM] OpenRouter model '{model}' responded successfully (HTTP 200)")
-                    return ans
+                    choices = data.get("choices", [])
+                    if choices:
+                        print(f"[LLM] OpenRouter model '{model}' responded successfully")
+                        return choices[0]["message"]["content"].strip()
                 else:
-                    err_snippet = r.text[:120].replace('\n', ' ')
-                    print(f"[LLM] OpenRouter model '{model}' returned HTTP {r.status_code}: {err_snippet}")
-                    last_error = f"HTTP {r.status_code}: {err_snippet}"
-            except Exception as ex:
-                print(f"[LLM] OpenRouter model '{model}' request failed: {ex}")
-                last_error = str(ex)
+                    last_error = f"{r.status_code}: {r.text[:200]}"
+                    print(f"[LLM] OpenRouter model '{model}' failed ({last_error}) — trying next candidate...")
+        except Exception as e:
+            last_error = str(e)
+            print(f"[LLM] OpenRouter model '{model}' exception: {e} — trying next candidate...")
 
-    raise RuntimeError(f"All OpenRouter candidate models failed. Last error: {last_error}")
+    raise RuntimeError(f"All OpenRouter models failed. Last error: {last_error}")
+
+
+def _is_quota_error(err_str: str) -> bool:
+    return any(q in err_str for q in _GEMINI_QUOTA_ERRORS)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
-
-def _is_quota_error(error_msg: str) -> bool:
-    """Check if a Gemini error is quota / rate-limit (triggers OpenRouter fallback)."""
-    low = error_msg.lower()
-    return any(kw.lower() in low for kw in _GEMINI_QUOTA_ERRORS)
-
 
 async def chat(user_message: str, context: str = "") -> str:
     """
@@ -265,7 +283,9 @@ async def chat(user_message: str, context: str = "") -> str:
       openrouter → OpenRouter only
       online     → Gemini → OpenRouter fallback
     """
-    provider = LLM_PROVIDER.lower()
+    provider = get_llm_provider()
+    gemini_key = get_gemini_api_key()
+    openrouter_key = get_openrouter_api_key()
 
     if provider == "local":
         return await _chat_ollama(user_message, context)
@@ -278,7 +298,7 @@ async def chat(user_message: str, context: str = "") -> str:
 
     if provider == "online":
         # Try Gemini first
-        if GEMINI_API_KEY:
+        if gemini_key:
             try:
                 result = await _chat_gemini(user_message, context)
                 print("[LLM] Gemini responded OK")
@@ -294,7 +314,7 @@ async def chat(user_message: str, context: str = "") -> str:
             print("[LLM] GEMINI_API_KEY not set — skipping Gemini, using OpenRouter")
 
         # Fallback: OpenRouter
-        if OPENROUTER_API_KEY:
+        if openrouter_key:
             print("[LLM] Fallback to OpenRouter initiated...")
             try:
                 result = await _chat_openrouter(user_message, context)
@@ -311,7 +331,7 @@ async def chat(user_message: str, context: str = "") -> str:
             "LLM_PROVIDER=online but neither GEMINI_API_KEY nor OPENROUTER_API_KEY is set"
         )
 
-    raise RuntimeError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r} — use local/online/gemini/openrouter")
+    raise RuntimeError(f"Unknown LLM_PROVIDER: {provider!r} — use local/online/gemini/openrouter")
 
 
 async def analyze_logs(container_name: str, logs: str) -> dict:
@@ -343,7 +363,7 @@ Logs:
         raw = raw.replace("```json", "").replace("```", "").strip()
         return json.loads(raw)
     except Exception as e:
-        provider = LLM_PROVIDER
+        provider = get_llm_provider()
         return {
             "severity":   "warn",
             "root_cause": str(e),
@@ -351,3 +371,20 @@ Logs:
             "auto_heal":  False,
             "heal_action": "none",
         }
+
+
+# ── Dynamic module-level attribute lookup for backward compatibility ──────────
+def __getattr__(name: str):
+    if name == 'LLM_PROVIDER':
+        return get_llm_provider()
+    if name == 'GEMINI_MODEL':
+        return get_gemini_model()
+    if name == 'OPENROUTER_MODEL':
+        return get_openrouter_model()
+    if name == 'LLM_MODEL':
+        return get_ollama_model()
+    if name == 'GEMINI_API_KEY':
+        return get_gemini_api_key()
+    if name == 'OPENROUTER_API_KEY':
+        return get_openrouter_api_key()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
